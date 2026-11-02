@@ -12,14 +12,14 @@ if (Number(process.versions.node.split('.')[0]) !== 24) {
 const repo = resolve(import.meta.dirname, '..')
 await import('./ensure-dsh-upstream.mjs')
 
-const configuredUpstream = process.env.FLOWIX_DSH_UPSTREAM_ROOT?.trim()
+const configuredUpstream = process.env.FLOWNOTE_DSH_UPSTREAM_ROOT?.trim()
 const upstream = configuredUpstream
   ? resolve(configuredUpstream)
   : resolve(repo, '.build/upstream/deepseek-harness')
 const target = targetKey()
 const bundle = resolve(repo, '.build/dsh-runtime-dev', target)
 const runtime = resolve(bundle, 'runtime')
-const profile = resolve(bundle, 'profile/flowix')
+const profile = resolve(bundle, 'profile/flownote')
 const pnpmVersion = '11.7.0'
 const corepackCommand = process.platform === 'win32' ? process.execPath : 'corepack'
 const corepackArgs = process.platform === 'win32'
@@ -38,7 +38,7 @@ if (!existsSync(resolve(upstream, 'node_modules/.modules.yaml'))) {
 }
 
 const cliMarker = resolve(upstream, 'apps/cli/lib/bin.js')
-if (!existsSync(cliMarker) || process.env.FLOWIX_DSH_REBUILD_LIBS === '1') {
+if (!existsSync(cliMarker) || process.env.FLOWNOTE_DSH_REBUILD_LIBS === '1') {
   await run(corepackCommand, [...corepackArgs, `pnpm@${pnpmVersion}`, 'run', 'build:lib:host'], upstream)
 }
 
@@ -57,21 +57,21 @@ await verifyDshNativePackages(runtime)
 await rm(resolve(runtime, 'src'), { recursive: true, force: true })
 await copyTree(resolve(upstream, 'apps/cli'), resolve(runtime, 'node_modules/@deepseek-ai/dsh'))
 await copyTree(resolve(repo, 'dsh-appserver'), resolve(runtime, 'node_modules/dsh-appserver'), true)
-await copyTree(resolve(repo, 'dsh-flowix-memory'), resolve(runtime, 'node_modules/dsh-flowix-memory'), true)
+await copyTree(resolve(repo, 'dsh-flownote-memory'), resolve(runtime, 'node_modules/dsh-flownote-memory'), true)
 
 await mkdir(resolve(profile, 'node_modules'), { recursive: true })
 await copyTree(resolve(repo, 'dsh-appserver'), resolve(profile, 'node_modules/dsh-appserver'), true)
-await copyTree(resolve(repo, 'dsh-flowix-memory'), resolve(profile, 'node_modules/dsh-flowix-memory'), true)
+await copyTree(resolve(repo, 'dsh-flownote-memory'), resolve(profile, 'node_modules/dsh-flownote-memory'), true)
 await cp(resolve(repo, 'scripts/dsh-dev-profile.patch.yml'), resolve(profile, 'cordis.patch.yml'))
 await writeFile(resolve(profile, 'package.json'), `${JSON.stringify({
-  name: 'dsh-profile-flowix',
+  name: 'dsh-profile-flownote',
   private: true,
-  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flowix-memory'] } },
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flownote-memory'] } },
 }, null, 2)}\n`)
 
 const devHome = resolve(bundle, '.dev-dsh-home')
 await mkdir(resolve(devHome, 'profiles'), { recursive: true })
-await cp(profile, resolve(devHome, 'profiles/flowix'), { recursive: true })
+await cp(profile, resolve(devHome, 'profiles/flownote'), { recursive: true })
 
 const nodeDir = resolve(bundle, 'node')
 await mkdir(nodeDir, { recursive: true })
@@ -87,7 +87,7 @@ await writeFile(resolve(bundle, 'dsh-runtime.json'), `${JSON.stringify({
 }, null, 2)}\n`)
 
 const runtimeCli = resolve(runtime, 'node_modules/@deepseek-ai/dsh/lib/bin.js')
-await run(process.execPath, [runtimeCli, '--profile', 'flowix', '--dump-config'], bundle, {
+await run(process.execPath, [runtimeCli, '--profile', 'flownote', '--dump-config'], bundle, {
   DSH_HOME: devHome,
   DSH_PROFILE_DIR: profile,
 })

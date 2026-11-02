@@ -1,5 +1,5 @@
-// Real-model runtime smoke: provisions the user's DeepSeek key from the Flowix
-// secret store into an isolated DSH home (exactly how a Flowix harness session
+// Real-model runtime smoke: provisions the user's DeepSeek key from the Flownote
+// secret store into an isolated DSH home (exactly how a Flownote harness session
 // does it) and exercises the paths that need live model traffic:
 //
 //   1. a streaming turn — assistant chunks arrive as item/agentMessage/delta
@@ -10,7 +10,7 @@
 //   3. the approval decline loop — declining resolves to rejected and the
 //      command does not run
 //
-// The key is read at runtime from ~/.flowix/db/default.db and written only into
+// The key is read at runtime from ~/.flownote/db/default.db and written only into
 // the throwaway DSH home (mode 0600); it is never printed.
 import { prepareRuntimeTest, JsonlClient, check } from './runtime/host.mjs'
 

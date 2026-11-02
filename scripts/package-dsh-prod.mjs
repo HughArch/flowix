@@ -9,13 +9,13 @@ import { verifyDshNativePackages } from './dsh-native-deps.mjs'
 
 const repo = resolve(import.meta.dirname, '..')
 const version = getDshReleaseVersion()
-const minFlowixVersion = process.env.FLOWIX_VERSION || '1.4.8'
+const minFlownoteVersion = process.env.FLOWNOTE_VERSION || '1.4.8'
 const semverPattern = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u
 if (!semverPattern.test(version)) {
   throw new Error(`invalid DSH package version ${version}; expected SemVer such as 1.5.0`)
 }
-if (!semverPattern.test(minFlowixVersion)) {
-  throw new Error(`invalid minimum Flowix version ${minFlowixVersion}; expected SemVer such as 1.3.2`)
+if (!semverPattern.test(minFlownoteVersion)) {
+  throw new Error(`invalid minimum Flownote version ${minFlownoteVersion}; expected SemVer such as 1.3.2`)
 }
 const bundleRoot = resolve(repo, '.build/dsh-runtime-bundle')
 const out = resolve(repo, '.build/releases/dsh')
@@ -26,10 +26,10 @@ const requiredNodeEntitlements = [
   'com.apple.security.cs.allow-unsigned-executable-memory',
   'com.apple.security.cs.disable-executable-page-protection',
 ]
-const signingIdentity = process.env.APPLE_SIGNING_IDENTITY?.trim() || (process.env.FLOWIX_DSH_ADHOC_SIGNING === '1' ? '-' : '')
+const signingIdentity = process.env.APPLE_SIGNING_IDENTITY?.trim() || (process.env.FLOWNOTE_DSH_ADHOC_SIGNING === '1' ? '-' : '')
 if (!existsSync(nodeEntitlements)) throw new Error(`DSH Node entitlements are missing: ${nodeEntitlements}`)
 if (!signingIdentity) {
-  throw new Error('DSH macOS packaging requires APPLE_SIGNING_IDENTITY; use FLOWIX_DSH_ADHOC_SIGNING=1 only for local testing')
+  throw new Error('DSH macOS packaging requires APPLE_SIGNING_IDENTITY; use FLOWNOTE_DSH_ADHOC_SIGNING=1 only for local testing')
 }
 if (!existsSync(bundleRoot)) {
   throw new Error(`local DSH runtime bundles are missing: ${bundleRoot}; run npm run dsh:build:prod first`)
@@ -54,14 +54,14 @@ for (const target of ['node24-macos-arm64', 'node24-macos-x64']) {
     arch: target.endsWith('arm64') ? 'arm64' : 'x64',
   })
 
-  const profile = resolve(targetRoot, 'profile/flowix')
+  const profile = resolve(targetRoot, 'profile/flownote')
   await mkdir(resolve(profile, 'node_modules'), { recursive: true })
   await cp(resolve(repo, 'dsh-appserver'), resolve(profile, 'node_modules/dsh-appserver'), { recursive: true, filter: p => !p.includes('/node_modules/') })
-  await cp(resolve(repo, 'dsh-flowix-memory'), resolve(profile, 'node_modules/dsh-flowix-memory'), { recursive: true, filter: p => !p.includes('/node_modules/') })
+  await cp(resolve(repo, 'dsh-flownote-memory'), resolve(profile, 'node_modules/dsh-flownote-memory'), { recursive: true, filter: p => !p.includes('/node_modules/') })
   await cp(resolve(repo, 'scripts/dsh-dev-profile.patch.yml'), resolve(profile, 'cordis.patch.yml'))
   await writeFile(resolve(profile, 'package.json'), `${JSON.stringify({
-    name: 'dsh-profile-flowix', private: true,
-    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flowix-memory'] } },
+    name: 'dsh-profile-flownote', private: true,
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flownote-memory'] } },
   }, null, 2)}\n`)
   await rm(resolve(targetRoot, 'host'), { recursive: true, force: true })
   await rm(resolve(targetRoot, 'dsh-runtime-dev.json'), { force: true })
@@ -84,10 +84,10 @@ for (const target of ['node24-macos-arm64', 'node24-macos-x64']) {
   const nodePath = resolve(targetRoot, 'node/node')
   signAndVerifyNode(nodePath, target)
 
-  if (process.env.FLOWIX_DSH_SKIP_HEALTH !== '1') {
+  if (process.env.FLOWNOTE_DSH_SKIP_HEALTH !== '1') {
     runTargetNode(target, nodePath, [resolve(repo, 'scripts/smoke-dsh-package.mjs'), '--root', targetRoot])
   }
-  const filename = `Flowix-DSH_${version}_${target}.tar.gz`
+  const filename = `Flownote-DSH_${version}_${target}.tar.gz`
   const archivePath = resolve(out, filename)
   run('tar', ['-czf', archivePath, '-C', targetRoot, '.'])
   runTargetNode(target, nodePath, [resolve(repo, 'scripts/verify-dsh-archive.mjs'), '--archive', archivePath])
@@ -95,13 +95,13 @@ for (const target of ['node24-macos-arm64', 'node24-macos-x64']) {
   const sha256 = createHash('sha256').update(bytes).digest('hex')
   const signature = signUpdaterArtifact(archivePath)
   platforms[platform] = {
-    url: `https://download.flowix-memo.com/dsh/${version}/${filename}?sha256=${sha256}`,
+    url: `https://download.flownote-memo.com/dsh/${version}/${filename}?sha256=${sha256}`,
     sha256, signature, sizeBytes: bytes.length, buildId: metadata.buildId,
   }
   console.log(`created ${archivePath} (${sha256})`)
 }
 
-const output = { schemaVersion: 1, product: 'flowix-dsh', version, protocolVersion: 1, minFlowixVersion, platforms }
+const output = { schemaVersion: 1, product: 'flownote-dsh', version, protocolVersion: 1, minFlownoteVersion, platforms }
 await writeFile(resolve(out, 'dsh-latest.json'), `${JSON.stringify(output, null, 2)}\n`)
 await mkdir(resolve(out, 'platforms/macos'), { recursive: true })
 await writeFile(resolve(out, 'platforms/macos/latest.json'), `${JSON.stringify(output, null, 2)}\n`)

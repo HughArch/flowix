@@ -1,7 +1,7 @@
 # 系统打开本地文档
 
 Windows 冷启动参数、第二实例参数和 macOS `RunEvent::Opened` 最终交给
-`app/flowix-desktop/src/app/open_targets.rs`。系统文件关联支持 `.md` 和
+`app/flownote-desktop/src/app/open_targets.rs`。系统文件关联支持 `.md` 和
 `.markdown`；深链接继续交给前端的笔记链接解析器。
 
 ## 请求交接

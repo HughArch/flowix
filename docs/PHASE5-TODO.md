@@ -68,7 +68,7 @@ import:`createStreamEventDispatcher`(lazy)、`mapAgentChunkToEvent`+`AgentEventM
 session-store delegate L370-390 → `chatStore()`。每个:读 chat-store `get()`→ 改 session `get()`;写 chat-store `set` → 改 session `set`/`setSessionMeta`/`setThreadProjection`;`setWithMetaMirror`(`chat-store.ts:252-275`)5 处 → 折叠成 `setSessionMeta`。
 
 - `loadThreadList` 家族(`load-thread-actions.ts:loadThreadListForType`,~12 行,5 个 collapse 成 1):写 `threadListUpdate`/`activeThreadUpdate`。搬 session:`setSessionMeta(threadLists/activeThreadIds/threadTypes)`。
-- `loadThread` 家族(`load-thread-actions.ts:loadThreadForType`,~55 行,5 个 collapse 成 1):写 `activeThreadUpdate`/`threadTypes`/`threadStates` + `replayExternalEventsForThread`(非 flowix/codex/claude/opencode)OR `session.loadMessages`。搬 session:`setSessionMeta`+`setThreadProjection`+ 重构 `replayExternalEventsForThread` 去 `(set,get)` closure。
+- `loadThread` 家族(`load-thread-actions.ts:loadThreadForType`,~55 行,5 个 collapse 成 1):写 `activeThreadUpdate`/`threadTypes`/`threadStates` + `replayExternalEventsForThread`(非 flownote/codex/claude/opencode)OR `session.loadMessages`。搬 session:`setSessionMeta`+`setThreadProjection`+ 重构 `replayExternalEventsForThread` 去 `(set,get)` closure。
 - `stopThreadRun`(`chat-store.ts:775-829`,55 行):已写 `setThreadProjection`(L787)。剩 `streamDispatcher.flushBuffer` + `agentClient.stopChatStream` + 读 `threadTypes`→`sessionMeta.threadTypes`。
 - `renameThread`(`chat-store.ts:550-605`,56 行):`setWithMetaMirror`(title+threadList)+ `agentClient.updateThreadTitle` + reload list + rollback。
 - `renameAgentConversation`(`chat-store.ts:607-648`,42 行):resolve instance + `conv.renameInstance`(→ `session.renameInstance` direct)+ `renameThread`。

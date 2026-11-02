@@ -1,4 +1,4 @@
-// Shared harness for runtime smokes: boots the installed Flowix DSH runtime as
+// Shared harness for runtime smokes: boots the installed Flownote DSH runtime as
 // a real Cordis host with this plugin mounted, over stdio or HTTP transport.
 //
 // The host is `dsh-sdk-jsonrpc-demo/packaged-bin`: it boots an external Cordis
@@ -19,13 +19,13 @@ export function resolveRuntimeRoot(explicit = process.env.DSH_RUNTIME_ROOT) {
   if (explicit) return resolve(explicit)
   const current = join(
     process.env.HOME,
-    'Library/Application Support/Flowix/dsh/current.json',
+    'Library/Application Support/Flownote/dsh/current.json',
   )
   if (!existsSync(current)) {
-    throw new Error(`no installed Flowix DSH found (looked at ${current}); set DSH_RUNTIME_ROOT`)
+    throw new Error(`no installed Flownote DSH found (looked at ${current}); set DSH_RUNTIME_ROOT`)
   }
   const manifest = JSON.parse(readFileSync(current, 'utf8'))
-  return join(process.env.HOME, 'Library/Application Support/Flowix/dsh/versions', manifest.version)
+  return join(process.env.HOME, 'Library/Application Support/Flownote/dsh/versions', manifest.version)
 }
 
 /** Flatten the runtime's dsh-base bundle patch into a plain entry list. */
@@ -39,7 +39,7 @@ async function baseEntries(runtimeRoot, { realLlm = false } = {}) {
   // entry rows by the four spaces they are nested under it. Duplicate ids are
   // not allowed in a flat entry list, so pruned rows are disabled in place.
   // The packaged headless runtime omits the typert/api-gateway JS from its
-  // closure; the flowix production profile disables the same rows.
+  // closure; the flownote production profile disables the same rows.
   const pruned = new Set(['typert', 'typert-loader', 'typert-gateway', 'session-title-llm'])
   const flattened = []
   for (const line of lines.slice(insertIndex + 1)) {
@@ -55,26 +55,26 @@ async function baseEntries(runtimeRoot, { realLlm = false } = {}) {
 }
 
 /**
- * Provision a real-model DSH home exactly the way a Flowix desktop harness
+ * Provision a real-model DSH home exactly the way a Flownote desktop harness
  * session does: provider routes come from the user's `~/.dsh/settings.yaml`
  * (env references only, no secrets), and the DeepSeek key is read from the
- * Flowix secret store (`~/.flowix/db/default.db`) into an isolated version-1
+ * Flownote secret store (`~/.flownote/db/default.db`) into an isolated version-1
  * credentials document. The key never appears in logs or process output.
  */
 async function provisionRealLlm(dshHome) {
   const userSettings = join(process.env.HOME, '.dsh/settings.yaml')
-  if (!existsSync(userSettings)) throw new Error(`real-LLM smoke needs ${userSettings} (Flowix-managed DSH settings)`)
+  if (!existsSync(userSettings)) throw new Error(`real-LLM smoke needs ${userSettings} (Flownote-managed DSH settings)`)
   await copyFile(userSettings, join(dshHome, 'settings.yaml'))
 
   const { DatabaseSync } = await import('node:sqlite')
-  const secretDb = new DatabaseSync(join(process.env.HOME, '.flowix/db/default.db'), { readOnly: true })
+  const secretDb = new DatabaseSync(join(process.env.HOME, '.flownote/db/default.db'), { readOnly: true })
   const row = secretDb.prepare("SELECT value FROM secret_kv WHERE key = 'DeepSeek::default'").get()
   secretDb.close()
-  if (!row?.value) throw new Error("no DeepSeek key found in ~/.flowix/db/default.db (entry 'DeepSeek::default')")
+  if (!row?.value) throw new Error("no DeepSeek key found in ~/.flownote/db/default.db (entry 'DeepSeek::default')")
   const credentialsPath = join(dshHome, '.credentials.yaml')
-  await writeFile(credentialsPath, `version: 1\nrefs:\n  FLOWIX_DSH_DEEPSEEK_API_KEY: ${row.value}\n`, { mode: 0o600 })
+  await writeFile(credentialsPath, `version: 1\nrefs:\n  FLOWNOTE_DSH_DEEPSEEK_API_KEY: ${row.value}\n`, { mode: 0o600 })
   await chmod(credentialsPath, 0o600)
-  return { credentialRef: 'FLOWIX_DSH_DEEPSEEK_API_KEY' }
+  return { credentialRef: 'FLOWNOTE_DSH_DEEPSEEK_API_KEY' }
 }
 
 export async function prepareRuntimeTest({ transport, realLlm = false }) {

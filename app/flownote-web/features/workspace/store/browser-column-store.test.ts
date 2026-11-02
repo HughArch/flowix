@@ -1,0 +1,369 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  BROWSER_COLUMN_DEFAULT_SPLIT_RATIO,
+  BROWSER_COLUMN_MIN_WIDTH,
+  useBrowserColumnStore,
+} from './browser-column-store';
+import { useWorkspaceFocusStore } from './workspace-focus-store';
+
+function tab(id: string, fileStem = id) {
+  return {
+    id,
+    title: `${id}.md`,
+    icon: null,
+    target: {
+      kind: 'file-browser' as const,
+      notebookId: 'notebook-1',
+      folderPath: '/notes',
+      scopePath: '/notes',
+      fileTreeVisible: true,
+      fileTreeWidth: 220,
+      activeFilePath: `/notes/${fileStem}.md`,
+    },
+  };
+}
+
+function pathTab(id: string, file: string) {
+  return {
+    id, title: file, icon: null,
+    target: { kind: 'file-browser' as const, folderPath: '/notes', notebookId: 'notebook-1',
+      scopePath: '/notes', fileTreeVisible: true, fileTreeWidth: 220, activeFilePath: `/notes/${file}` },
+  };
+}
+
+describe('browser column store', () => {
+  beforeEach(() => {
+    localStorage.removeItem('flownote-browser-column-storage');
+    localStorage.removeItem('flownote-fourth-column-storage');
+    useBrowserColumnStore.getState().reset();
+  });
+
+  it('updates a retained tab path and folder when its file moves', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab({ ...tab('file'), target: { ...tab('file').target, folderPath: '/notes/drafts', activeFilePath: '/notes/drafts/a.md' } });
+    store.replaceExternalPath('/notes/drafts/a.md', '/notes/done/a.md');
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
+      activeFilePath: '/notes/done/a.md', folderPath: '/notes/done',
+    });
+  });
+
+  it('focuses an existing target instead of duplicating it by default', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(tab('note:a', 'a'));
+    store.openTab(tab('note:a:second', 'a'));
+
+    expect(useBrowserColumnStore.getState()).toMatchObject({
+      tabs: [{ ...tab('note:a', 'a'), title: 'note:a:second.md' }],
+      activeTabId: 'note:a',
+      visible: true,
+    });
+    expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('browser-column');
+  });
+
+  it('deduplicates external views by canonical document path', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab({
+      id: 'file',
+      title: 'A',
+      icon: null,
+      target: { kind: 'file-browser', folderPath: null, notebookId: null, fileTreeVisible: true, fileTreeWidth: 220, activeFilePath: '/notes/a.md', scopePath: null },
+    });
+    store.openTab({
+      id: 'file-with-scope',
+      title: 'A',
+      icon: null,
+      target: {
+        kind: 'file-browser', folderPath: null, notebookId: null, fileTreeVisible: true, fileTreeWidth: 220, activeFilePath: '/notes\\a.md',
+        scopePath: '/notes',
+      },
+    });
+
+    expect(useBrowserColumnStore.getState().tabs).toHaveLength(1);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('file');
+  });
+
+  it('reuses an existing target when replace-active would otherwise duplicate it', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(tab('note:a', 'a'));
+    store.openTab(tab('note:b', 'b'));
+
+    store.openTab(tab('note:a:replacement', 'a'), 'replace-active');
+
+    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['note:a']);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('note:a');
+  });
+
+  it('returns focus to the main space when the last tab closes', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(tab('a'));
+    store.closeTab('a');
+
+    expect(useBrowserColumnStore.getState()).toMatchObject({
+      tabs: [],
+      activeTabId: null,
+      visible: false,
+    });
+    expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('main-third');
+  });
+
+  it('closes other tabs and keeps the context-menu tab active', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(tab('a'));
+    store.openTab(tab('b'));
+    store.openTab(tab('c'));
+    store.commitTab('a');
+
+    store.closeOtherTabs('c');
+
+    expect(useBrowserColumnStore.getState()).toMatchObject({
+      tabs: [tab('c')],
+      activeTabId: 'c',
+      visible: true,
+    });
+    expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('browser-column');
+  });
+
+  it('closes tabs to the right and activates the context-menu tab when needed', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(tab('a'));
+    store.openTab(tab('b'));
+    store.openTab(tab('c'));
+    store.commitTab('c');
+
+    store.closeTabsToRight('b');
+
+    expect(useBrowserColumnStore.getState()).toMatchObject({
+      tabs: [tab('a'), tab('b')],
+      activeTabId: 'b',
+      visible: true,
+    });
+  });
+
+  it('closes all tabs and hides the browser column', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(tab('a'));
+    store.openTab(tab('b'));
+
+    store.closeAllTabs();
+
+    expect(useBrowserColumnStore.getState()).toMatchObject({
+      tabs: [],
+      activeTabId: null,
+      visible: false,
+      webRuntimes: {},
+    });
+    expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('main-third');
+  });
+
+  it('clamps the split ratio to a safe range', () => {
+    const store = useBrowserColumnStore.getState();
+    expect(useBrowserColumnStore.getState().splitRatio).toBe(BROWSER_COLUMN_DEFAULT_SPLIT_RATIO);
+    store.setSplitRatio(-1);
+    expect(useBrowserColumnStore.getState().splitRatio).toBe(0.05);
+    store.setSplitRatio(9999);
+    expect(useBrowserColumnStore.getState().splitRatio).toBe(0.95);
+    expect(BROWSER_COLUMN_MIN_WIDTH).toBe(360);
+  });
+
+  it('persists and rehydrates the visible tabs and active tab', async () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(pathTab('path:a', 'a.md'));
+    store.openTab(pathTab('path:b', 'b.md'));
+    store.commitTab('path:a');
+    store.reorderTab('path:b', 'path:a');
+    store.setSplitRatio(0.7);
+
+    const persisted = localStorage.getItem('flownote-browser-column-storage');
+    expect(persisted).not.toBeNull();
+
+    store.reset();
+    localStorage.setItem('flownote-browser-column-storage', persisted!);
+    await useBrowserColumnStore.persist.rehydrate();
+
+    expect(useBrowserColumnStore.getState()).toMatchObject({
+      visible: true,
+      splitRatio: 0.7,
+      tabs: [pathTab('path:b', 'b.md'), pathTab('path:a', 'a.md')],
+      activeTabId: 'path:a',
+    });
+  });
+
+  it('does not restore an AGENTS.md tab after reload', async () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(pathTab('path:a', 'a.md'));
+    store.openTab({
+      id: 'file:/notes/AGENTS.md',
+      title: 'AGENTS',
+      icon: null,
+      target: { kind: 'file-browser', folderPath: '/notes', notebookId: 'notebook-1', scopePath: '/notes', fileTreeVisible: true, fileTreeWidth: 220, activeFilePath: '/notes/AGENTS.md' },
+    });
+    const persisted = localStorage.getItem('flownote-browser-column-storage');
+    store.reset();
+    localStorage.setItem('flownote-browser-column-storage', persisted!);
+    await useBrowserColumnStore.persist.rehydrate();
+    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['path:a']);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('path:a');
+  });
+
+  it('keeps web navigation runtime separate from the durable tab target', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab({
+      id: 'web:flownote',
+      title: 'Flownote',
+      icon: null,
+      target: { kind: 'web', url: 'https://flownote.dev/' },
+    });
+
+    store.navigateWebTab('web:flownote', 'https://flownote.dev/docs');
+    store.navigateWebTab('web:flownote', 'https://flownote.dev/about');
+
+    expect(useBrowserColumnStore.getState().webRuntimes['web:flownote']).toMatchObject({
+      currentUrl: 'https://flownote.dev/about',
+      history: ['https://flownote.dev/', 'https://flownote.dev/docs', 'https://flownote.dev/about'],
+      historyIndex: 2,
+      isLoading: true,
+    });
+    expect(useBrowserColumnStore.getState().tabs[0].target).toEqual({
+      kind: 'web',
+      url: 'https://flownote.dev/about',
+    });
+
+    store.goBackWebTab('web:flownote');
+    expect(useBrowserColumnStore.getState().webRuntimes['web:flownote']).toMatchObject({
+      currentUrl: 'https://flownote.dev/docs',
+      historyIndex: 1,
+    });
+    store.goForwardWebTab('web:flownote');
+    store.reloadWebTab('web:flownote');
+    expect(useBrowserColumnStore.getState().webRuntimes['web:flownote'].reloadToken).toBe(5);
+  });
+
+  it('removes a file tab by path when the note is deleted', () => {
+    const store = useBrowserColumnStore.getState();
+    store.openTab(tab('note:a', 'a'));
+    store.openTab(tab('note:b', 'b'));
+
+    expect(store.removeTabsByFilePath('/notes/a.md')).toEqual(['note:a']);
+    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['note:b']);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('note:b');
+  });
+
+  it('does not restore obsolete fourth-column storage', async () => {
+    const legacyState = {
+      visible: true,
+      splitRatio: 0.6,
+      tabs: [
+        {
+          id: 'legacy-markdown',
+          title: 'README',
+          icon: null,
+          target: { kind: 'external_markdown', filePath: '/notes/README.md' },
+        },
+        {
+          id: 'legacy-web',
+          title: 'Example',
+          icon: null,
+          target: { kind: 'external_webpage', url: 'https://example.com/docs' },
+        },
+      ],
+      activeTabId: 'legacy-web',
+    };
+    localStorage.removeItem('flownote-browser-column-storage');
+    localStorage.setItem(
+      'flownote-fourth-column-storage',
+      JSON.stringify({ state: legacyState, version: 0 }),
+    );
+
+    await useBrowserColumnStore.persist.rehydrate();
+
+    expect(useBrowserColumnStore.getState()).toMatchObject({ visible: false, tabs: [], activeTabId: null });
+    expect(useBrowserColumnStore.getState().webRuntimes).toEqual({});
+  });
+});
+
+it('migrates v2 file and directory duplicates while retaining the active directory context', async () => {
+  useBrowserColumnStore.getState().reset();
+  localStorage.setItem('flownote-browser-column-storage', JSON.stringify({ version: 2, state: {
+    visible: true, activeTabId: 'directory', tabs: [
+      { id: 'file', title: 'A', icon: null, target: { kind: 'file', filePath: '/workspace/a.md', scopePath: null } },
+      { id: 'directory', title: 'workspace', icon: null, target: {
+        kind: 'file-browser', folderPath: '/workspace', activeFilePath: '/workspace/a.md',
+        fileTreeVisible: false, fileTreeWidth: 300,
+      } },
+    ],
+  } }));
+  await useBrowserColumnStore.persist.rehydrate();
+  const state = useBrowserColumnStore.getState();
+  expect(state.activeTabId).toBe('directory');
+  expect(state.tabs).toHaveLength(1);
+  expect(state.tabs[0].target).toMatchObject({
+    kind: 'file-browser', activeFilePath: '/workspace/a.md', folderPath: '/workspace',
+    scopePath: '/workspace', restoreNotebookContext: true, fileTreeVisible: false, fileTreeWidth: 300,
+  });
+});
+
+it('retains a native file ownership binding when restoring its tab', async () => {
+  const nativeTab = tab('native', 'sub/a');
+  nativeTab.target.notebookId = 'alias';
+  nativeTab.target.scopePath = '/alias-notebook';
+  localStorage.setItem('flownote-browser-column-storage', JSON.stringify({ version: 2, state: {
+    visible: true, activeTabId: 'native', tabs: [{ ...nativeTab, target: {
+      ...nativeTab.target, notebookContextPath: nativeTab.target.activeFilePath,
+    } }],
+  } }));
+  await useBrowserColumnStore.persist.rehydrate();
+  expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
+    notebookId: 'alias', scopePath: '/alias-notebook', notebookContextPath: nativeTab.target.activeFilePath,
+  });
+});
+
+it('preserves Work focus and a hidden Browser when removing a background tab', () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset(); store.openTab(tab('a')); store.openTab(tab('b')); store.setVisible(false);
+  useWorkspaceFocusStore.getState().focusHost('main-third');
+  store.closeTab('a');
+  expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('main-third');
+  expect(useBrowserColumnStore.getState()).toMatchObject({ visible: false, activeTabId: 'b' });
+});
+
+it('uses the folder name when its selected file is cleared', () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset(); store.openTab(tab('a'));
+  store.selectFileBrowserFile('a', null);
+  expect(useBrowserColumnStore.getState().tabs[0]).toMatchObject({ title: 'notes', target: { activeFilePath: null } });
+});
+
+it('skips durable storage for runtime-only updates and persists actual navigation', async () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset();
+  store.openTab({ id: 'web', title: 'Web', icon: null, target: { kind: 'web', url: 'https://example.com/' } });
+  const write = vi.spyOn(Storage.prototype, 'setItem');
+  try {
+    store.setWebRuntime('web', { ...useBrowserColumnStore.getState().webRuntimes.web, isLoading: false });
+    store.reloadWebTab('web');
+    store.updateTabMetadata('web', { title: 'Web', icon: null });
+    expect(write).not.toHaveBeenCalled();
+    store.navigateWebTab('web', 'https://example.com/next');
+    expect(write).toHaveBeenCalledOnce();
+    await useBrowserColumnStore.persist.rehydrate();
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({ url: 'https://example.com/next' });
+  } finally { write.mockRestore(); }
+});
+
+it('restores tab order and selection while dropping process-local web history', async () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset();
+  for (const id of ['a', 'b', 'c']) store.openTab({ id, title: id, icon: null, target: { kind: 'web', url: `https://${id}.example/` } });
+  store.navigateWebTab('b', 'https://b.example/next');
+  store.reorderTab('a', null);
+  store.commitTab('b');
+  const persisted = localStorage.getItem('flownote-browser-column-storage')!;
+  store.reset();
+  localStorage.setItem('flownote-browser-column-storage', persisted);
+  await useBrowserColumnStore.persist.rehydrate();
+  const restored = useBrowserColumnStore.getState();
+  expect(restored.tabs.map((tab) => tab.id)).toEqual(['b', 'c', 'a']);
+  expect(restored.activeTabId).toBe('b');
+  expect(restored.tabs[0].target).toMatchObject({ url: 'https://b.example/next' });
+  expect(restored.webRuntimes).toEqual({});
+});

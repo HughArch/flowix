@@ -19,7 +19,7 @@
 导航、引用校验、文件夹类型切换和集合索引直接读取 v2 文档。现有表格与媒体编辑器在入口和保存处使用兼容适配，编辑器的旧字段不进入文件中的 `collection` 元数据。
 
 ```yaml
-format: flowix.collection
+format: flownote.collection
 schema_version: 2
 collection:
   id: col_01900000000070008000000000000000
@@ -121,7 +121,7 @@ payload:
 
 ## 索引与变更
 
-索引存放在 `<notebook>/.flowix/notebook.db`：
+索引存放在 `<notebook>/.flownote/notebook.db`：
 
 | 表 | 用途 |
 | --- | --- |
@@ -142,7 +142,7 @@ payload:
 
 桌面端统一使用 `list_collections`、`resolve_collection`、`mutate_collection`、`set_collection_display_state` 和 `make_collection_identity_unique`。CLI 与 MCP 共用只读操作 `collection.read`，可按集合 ID 或笔记本内相对路径读取。读取返回原始 payload，不运行视图筛选、分页或笔记 frontmatter 展开。
 
-- 公共协议：`app/flowix-core/src/collection.rs`、`app/flowix-web/features/collection/model.ts`
-- 索引和生命周期：`app/flowix-desktop/src/commands/collection.rs`
-- 文件夹点击与导航：`app/flowix-web/features/memo/components/notebook-folder-view.tsx`、`app/flowix-web/features/workspace/use-cases/workspace-navigation.ts`
-- 展示注册表：`app/flowix-web/lib/collection-display-registry.ts`
+- 公共协议：`app/flownote-core/src/collection.rs`、`app/flownote-web/features/collection/model.ts`
+- 索引和生命周期：`app/flownote-desktop/src/commands/collection.rs`
+- 文件夹点击与导航：`app/flownote-web/features/memo/components/notebook-folder-view.tsx`、`app/flownote-web/features/workspace/use-cases/workspace-navigation.ts`
+- 展示注册表：`app/flownote-web/lib/collection-display-registry.ts`

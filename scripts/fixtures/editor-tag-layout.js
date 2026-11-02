@@ -1,11 +1,11 @@
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
-import { Tag } from '../../app/flowix-web/features/editor/extensions/tag';
-import { propertyValueTypography } from '../../app/flowix-web/features/document/properties/value-typography';
-import '../../app/flowix-web/styles/fonts.css';
-import '../../app/flowix-web/styles/editor.css';
-import '../../app/flowix-web/styles/editor-frontmatter.css';
-import '../../app/flowix-web/styles/multidimensional-table.css';
+import { Tag } from '../../app/flownote-web/features/editor/extensions/tag';
+import { propertyValueTypography } from '../../app/flownote-web/features/document/properties/value-typography';
+import '../../app/flownote-web/styles/fonts.css';
+import '../../app/flownote-web/styles/editor.css';
+import '../../app/flownote-web/styles/editor-frontmatter.css';
+import '../../app/flownote-web/styles/multidimensional-table.css';
 
 // Run in a real browser: jsdom cannot measure font-dependent backgrounds.
 const report = document.querySelector('#tag-layout-result');
@@ -183,7 +183,7 @@ async function verify() {
           `Missing background: ${context}`);
       }
       const icon = getComputedStyle(wrapper.querySelector('.tag-node-prefix'));
-      const expectedFont = os === 'windows' ? 'Flowix Tag Icon Consolas' : 'Flowix Tag Icon';
+      const expectedFont = os === 'windows' ? 'Flownote Tag Icon Consolas' : 'Flownote Tag Icon';
       check(icon.fontFamily.split(',')[0].replaceAll('"', '').trim() === expectedFont,
         `Icon font changed: ${context}`);
       check(Math.abs(parseFloat(icon.fontSize) - size) < 0.01, `Icon size changed: ${context}`);

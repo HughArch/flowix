@@ -5,7 +5,7 @@ import { applyTauriSigningKey } from "./resolve-tauri-signing-key.mjs";
 applyTauriSigningKey();
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
-const tauriDir = path.join(repoRoot, "app", "flowix-desktop");
+const tauriDir = path.join(repoRoot, "app", "flownote-desktop");
 const baseConfigPath = path.join(tauriDir, "tauri.conf.json");
 const productionConfigPath = path.join(tauriDir, "tauri.conf.production.json");
 const platformArgIndex = process.argv.indexOf("--platform");
@@ -19,17 +19,17 @@ const cargoManifest = fs.readFileSync(path.join(repoRoot, "app", "Cargo.toml"), 
 const cargoVersion = /^version\s*=\s*"([^"]+)"/mu.exec(cargoManifest)?.[1];
 const packageVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")).version;
 
-const allowUnsigned = process.env.FLOWIX_ALLOW_UNSIGNED === "1";
+const allowUnsigned = process.env.FLOWNOTE_ALLOW_UNSIGNED === "1";
 const allowUnsignedWindows =
-  allowUnsigned || process.env.FLOWIX_ALLOW_UNSIGNED_WINDOWS === "1";
+  allowUnsigned || process.env.FLOWNOTE_ALLOW_UNSIGNED_WINDOWS === "1";
 const hasUpdaterSigningKey = Boolean(
   process.env.TAURI_SIGNING_PRIVATE_KEY?.trim() ||
     process.env.TAURI_SIGNING_PRIVATE_KEY_PATH?.trim(),
 );
 if (!allowUnsigned && !hasUpdaterSigningKey) {
   throw new Error(
-    "TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH is required for signed Flowix updater artifacts. " +
-      "Set FLOWIX_ALLOW_UNSIGNED=1 only for local unsigned packages.",
+    "TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH is required for signed Flownote updater artifacts. " +
+      "Set FLOWNOTE_ALLOW_UNSIGNED=1 only for local unsigned packages.",
   );
 }
 
@@ -69,7 +69,7 @@ function mergeConfig(base, override) {
 function requiredEnv(name, allowMissing = false) {
   const value = process.env[name];
   if (!value && !allowMissing) {
-    throw new Error(`${name} is required for a signed production build. Set FLOWIX_ALLOW_UNSIGNED=1 only for local unsigned packages.`);
+    throw new Error(`${name} is required for a signed production build. Set FLOWNOTE_ALLOW_UNSIGNED=1 only for local unsigned packages.`);
   }
   return value;
 }
@@ -79,7 +79,7 @@ const productionOverride = stripCommentKeys(readJson(productionConfigPath));
 const allowUnsignedMac = allowUnsigned;
 if (!cargoVersion || cargoVersion !== base.version || cargoVersion !== packageVersion) {
   throw new Error(
-    `Flowix version mismatch: Cargo=${cargoVersion ?? "<missing>"}, ` +
+    `Flownote version mismatch: Cargo=${cargoVersion ?? "<missing>"}, ` +
     `Tauri=${base.version ?? "<missing>"}, package=${packageVersion ?? "<missing>"}`,
   );
 }
@@ -103,17 +103,17 @@ production.bundle.resources = {
   [path.join(repoRoot, ".build", "pi-runtime", "provider-catalog.json")]: "pi/provider-catalog.json",
 };
 
-// Ship the Flowix-owned DSH profile as an app resource. It is copied into the
+// Ship the Flownote-owned DSH profile as an app resource. It is copied into the
 // user's selected DSH_HOME only after they explicitly install the App Server
 // plugin from Preferences.
-const dshProfileStage = path.join(repoRoot, ".build", "dsh-appserver-profile", "flowix");
+const dshProfileStage = path.join(repoRoot, ".build", "dsh-appserver-profile", "flownote");
 fs.rmSync(path.dirname(dshProfileStage), { recursive: true, force: true });
 fs.mkdirSync(path.join(dshProfileStage, "node_modules"), { recursive: true });
 fs.cpSync(path.join(repoRoot, "dsh-appserver"), path.join(dshProfileStage, "node_modules", "dsh-appserver"), {
   recursive: true,
   filter: (source) => !source.includes(`${path.sep}node_modules${path.sep}`),
 });
-fs.cpSync(path.join(repoRoot, "dsh-flowix-memory"), path.join(dshProfileStage, "node_modules", "dsh-flowix-memory"), {
+fs.cpSync(path.join(repoRoot, "dsh-flownote-memory"), path.join(dshProfileStage, "node_modules", "dsh-flownote-memory"), {
   recursive: true,
   filter: (source) => !source.includes(`${path.sep}node_modules${path.sep}`),
 });
@@ -122,11 +122,11 @@ fs.copyFileSync(
   path.join(dshProfileStage, "cordis.patch.yml"),
 );
 fs.writeFileSync(path.join(dshProfileStage, "package.json"), `${JSON.stringify({
-  name: "dsh-profile-flowix",
+  name: "dsh-profile-flownote",
   private: true,
-  dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "dsh-appserver", "dsh-flowix-memory"] } },
+  dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "dsh-appserver", "dsh-flownote-memory"] } },
 }, null, 2)}\n`);
-production.bundle.resources[dshProfileStage] = "dsh-profile/flowix";
+production.bundle.resources[dshProfileStage] = "dsh-profile/flownote";
 const piStageRoot = path.join(repoRoot, ".build", "pi-runtime");
 const providerCatalog = path.join(piStageRoot, "provider-catalog.json");
 if (!fs.existsSync(providerCatalog)) {
@@ -139,7 +139,7 @@ if (!fs.existsSync(piResourcesPath)) {
 const piPlatform = { darwin: "darwin", win32: "windows", linux: "linux" }[targetPlatform];
 const nativePiPlatform = { darwin: "darwin", win32: "windows", linux: "linux" }[process.platform];
 const nativePiArch = { arm64: "arm64", x64: "x64" }[process.arch];
-const targetArch = process.env.FLOWIX_PI_TARGET_ARCH
+const targetArch = process.env.FLOWNOTE_PI_TARGET_ARCH
   || (nativePiPlatform === piPlatform ? nativePiArch : undefined);
 if (!targetArch || !["arm64", "x64"].includes(targetArch)) {
   throw new Error(`Unsupported or missing Pi target architecture: ${targetArch ?? "<missing>"}`);
@@ -167,7 +167,7 @@ if (!executablePath) {
 }
 Object.assign(production.bundle.resources, Object.fromEntries(selectedPiResources));
 if (allowUnsigned) {
-  // Local builds may omit updater artifacts; signed production Flowix builds
+  // Local builds may omit updater artifacts; signed production Flownote builds
   // keep this enabled and require TAURI_SIGNING_PRIVATE_KEY.
   production.bundle.createUpdaterArtifacts = false;
 }
@@ -232,23 +232,23 @@ if (targetPlatform === "win32") {
   }
 }
 
-// The updater manifest is signed per Flowix desktop release. DSH has its own
+// The updater manifest is signed per Flownote desktop release. DSH has its own
 // runtime manifest and verifies both SHA-256 and the same Tauri/Minisign
 // signature; it must not inherit this endpoint configuration.
 const updaterEndpointEnv = {
-  darwin: "FLOWIX_UPDATER_ENDPOINT_MACOS",
-  win32: "FLOWIX_UPDATER_ENDPOINT_WINDOWS",
-  linux: "FLOWIX_UPDATER_ENDPOINT_LINUX",
+  darwin: "FLOWNOTE_UPDATER_ENDPOINT_MACOS",
+  win32: "FLOWNOTE_UPDATER_ENDPOINT_WINDOWS",
+  linux: "FLOWNOTE_UPDATER_ENDPOINT_LINUX",
 }[targetPlatform];
 const updaterEndpointDefault = {
-  darwin: "https://download.flowix.cc/updater/macos/latest.json",
-  win32: "https://download.flowix.cc/updater/windows/latest.json",
-  linux: "https://download.flowix.cc/updater/linux/latest.json",
+  darwin: "https://download.flownote.cc/updater/macos/latest.json",
+  win32: "https://download.flownote.cc/updater/windows/latest.json",
+  linux: "https://download.flownote.cc/updater/linux/latest.json",
 }[targetPlatform];
 const piUpdaterEndpointEnv = {
-  darwin: "FLOWIX_UPDATER_ENDPOINT_PI_MACOS",
-  win32: "FLOWIX_UPDATER_ENDPOINT_PI_WINDOWS",
-  linux: "FLOWIX_UPDATER_ENDPOINT_PI_LINUX",
+  darwin: "FLOWNOTE_UPDATER_ENDPOINT_PI_MACOS",
+  win32: "FLOWNOTE_UPDATER_ENDPOINT_PI_WINDOWS",
+  linux: "FLOWNOTE_UPDATER_ENDPOINT_PI_LINUX",
 }[targetPlatform];
 const updaterEndpoint = process.env[piUpdaterEndpointEnv]?.trim()
   || process.env[updaterEndpointEnv]?.trim() || updaterEndpointDefault;

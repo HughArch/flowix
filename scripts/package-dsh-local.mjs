@@ -14,14 +14,14 @@ const bundle = resolve(output, 'node24-windows-x64')
 const runtime = resolve(output, 'runtime')
 const release = resolve(repo, '.build/releases/dsh-local')
 const version = getDshReleaseVersion()
-const minFlowixVersion = process.env.FLOWIX_VERSION || '1.3.2'
+const minFlownoteVersion = process.env.FLOWNOTE_VERSION || '1.3.2'
 const semverPattern = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u
 
 if (!semverPattern.test(version)) {
   throw new Error(`invalid DSH package version ${version}; expected SemVer such as 1.5.0`)
 }
-if (!semverPattern.test(minFlowixVersion)) {
-  throw new Error(`invalid minimum Flowix version ${minFlowixVersion}; expected SemVer such as 1.3.2`)
+if (!semverPattern.test(minFlownoteVersion)) {
+  throw new Error(`invalid minimum Flownote version ${minFlownoteVersion}; expected SemVer such as 1.3.2`)
 }
 if (!existsSync(resolve(upstream, 'package.json'))) {
   throw new Error(`local DSH upstream source is missing: ${upstream}`)
@@ -80,15 +80,15 @@ await cp(runtime, resolve(bundle, 'runtime'), {
 })
 await mkdir(resolve(bundle, 'node'), { recursive: true })
 await cp(process.execPath, resolve(bundle, 'node/node.exe'))
-await copyTree(resolve(repo, 'dsh-appserver'), resolve(bundle, 'profile/flowix/node_modules/dsh-appserver'))
-await copyTree(resolve(repo, 'dsh-flowix-memory'), resolve(bundle, 'profile/flowix/node_modules/dsh-flowix-memory'))
-await mkdir(resolve(bundle, 'profile/flowix'), { recursive: true })
-await writeFile(resolve(bundle, 'profile/flowix/package.json'), `${JSON.stringify({
-  name: 'dsh-profile-flowix',
+await copyTree(resolve(repo, 'dsh-appserver'), resolve(bundle, 'profile/flownote/node_modules/dsh-appserver'))
+await copyTree(resolve(repo, 'dsh-flownote-memory'), resolve(bundle, 'profile/flownote/node_modules/dsh-flownote-memory'))
+await mkdir(resolve(bundle, 'profile/flownote'), { recursive: true })
+await writeFile(resolve(bundle, 'profile/flownote/package.json'), `${JSON.stringify({
+  name: 'dsh-profile-flownote',
   private: true,
-  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flowix-memory'] } },
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flownote-memory'] } },
 }, null, 2)}\n`)
-await cp(resolve(repo, 'scripts/dsh-dev-profile.patch.yml'), resolve(bundle, 'profile/flowix/cordis.patch.yml'))
+await cp(resolve(repo, 'scripts/dsh-dev-profile.patch.yml'), resolve(bundle, 'profile/flownote/cordis.patch.yml'))
 
 const metadata = createDshRuntimeMetadata({
   target: 'node24-windows-x64',
@@ -101,11 +101,11 @@ const metadata = createDshRuntimeMetadata({
 })
 await writeFile(resolve(bundle, 'dsh-runtime.json'), `${JSON.stringify(metadata, null, 2)}\n`)
 
-const profile = resolve(bundle, 'profile/flowix')
+const profile = resolve(bundle, 'profile/flownote')
 run(process.execPath, [resolve(repo, 'scripts/smoke-dsh-package.mjs'), '--root', bundle])
 
 await mkdir(release, { recursive: true })
-const filename = `Flowix-DSH_${version}_node24-windows-x64.tar.gz`
+const filename = `Flownote-DSH_${version}_node24-windows-x64.tar.gz`
 const archive = resolve(release, filename)
 // The hoisted deploy tree has real top-level node_modules entries; pnpm's
 // virtual-store copy is only install metadata and is not needed by Node at
@@ -117,13 +117,13 @@ const sha256 = createHash('sha256').update(bytes).digest('hex')
 const signature = signUpdaterArtifact(archive)
 const manifest = {
   schemaVersion: 1,
-  product: 'flowix-dsh',
+  product: 'flownote-dsh',
   version,
   protocolVersion: 1,
-  minFlowixVersion,
+  minFlownoteVersion,
   platforms: {
     'windows-x86_64': {
-      url: `https://download.flowix-memo.com/dsh/${version}/${filename}?sha256=${sha256}`,
+      url: `https://download.flownote-memo.com/dsh/${version}/${filename}?sha256=${sha256}`,
       sha256,
       signature,
       sizeBytes: bytes.length,

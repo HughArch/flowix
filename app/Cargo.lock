@@ -1264,16 +1264,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowix-cli"
+name = "flownote-cli"
 version = "1.5.9"
 dependencies = [
  "chrono",
  "clap",
  "clap_complete",
  "dirs 5.0.1",
- "flowix-core",
- "flowix-fns",
- "flowix-plugin-runtime",
+ "flownote-core",
+ "flownote-fns",
+ "flownote-plugin-runtime",
  "nanoid",
  "rusqlite",
  "serde",
@@ -1285,7 +1285,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowix-core"
+name = "flownote-core"
 version = "1.5.13"
 dependencies = [
  "chrono",
@@ -1312,7 +1312,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowix-desktop"
+name = "flownote-desktop"
 version = "1.5.13"
 dependencies = [
  "async-trait",
@@ -1322,10 +1322,10 @@ dependencies = [
  "dunce",
  "filetime",
  "flate2",
- "flowix-core",
- "flowix-fns",
- "flowix-installer-helper",
- "flowix-plugin-runtime",
+ "flownote-core",
+ "flownote-fns",
+ "flownote-installer-helper",
+ "flownote-plugin-runtime",
  "fs2",
  "futures",
  "hostname",
@@ -1373,7 +1373,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowix-fns"
+name = "flownote-fns"
 version = "1.5.13"
 dependencies = [
  "filetime",
@@ -1392,7 +1392,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowix-installer-helper"
+name = "flownote-installer-helper"
 version = "1.5.13"
 dependencies = [
  "dunce",
@@ -1400,11 +1400,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowix-plugin-runtime"
+name = "flownote-plugin-runtime"
 version = "1.5.13"
 dependencies = [
  "chrono",
- "flowix-core",
+ "flownote-core",
  "semver",
  "serde",
  "serde_json",

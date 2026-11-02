@@ -9,7 +9,7 @@
 
 | 维度 | 现状 | 结论 |
 |---|---|---|
-| 存储层 | 底层 IO 扩展名无关（`file_io.rs` 的 `create_file_for_notebook` / `write_file_for_notebook` 收任意路径+bytes） | 存 `.flowix-canvas` JSON 零改动 |
+| 存储层 | 底层 IO 扩展名无关（`file_io.rs` 的 `create_file_for_notebook` / `write_file_for_notebook` 收任意路径+bytes） | 存 `.fanvas` JSON 零改动 |
 | 同步层（FNS） | 非 .md 文件自动走文件/附件通道（只排除隐藏目录与临时文件） | **同步零改动** |
 | agent 工具层 | `file_create/read/write` 明确支持任意非 md 扩展名 | agent 现在就能读写画布 JSON |
 | 视图层 | 已有「自定义扩展名 → 专属 surface 视图」完整先例（`.table.yaml` / `.lib.yaml` / `.workdocs.yaml`） | 照抄注册流程即可 |
@@ -22,29 +22,29 @@
 - **形态 A：白板手绘**（Excalidraw / tldraw 式）——自由绘制图形、箭头、手写笔迹，画布上主要是「画」。
 - **形态 B：卡片无界笔记**（AFFiNE edgeless / Heptabase / Obsidian Canvas 式）——把已有笔记卡片放到无限画布上，连线组织关系，画布上主要是「引用与组织」。
 
-两者不互斥（AFFiNE 两者都有）。若 Flowix 的核心诉求是形态 B，价值点在「笔记卡片引用 memo + 反向链接」，Excalidraw 手绘只是补充；若先要形态 A，Excalidraw 嵌入是最快路径。
+两者不互斥（AFFiNE 两者都有）。若 Flownote 的核心诉求是形态 B，价值点在「笔记卡片引用 memo + 反向链接」，Excalidraw 手绘只是补充；若先要形态 A，Excalidraw 嵌入是最快路径。
 
 ## 3. 代码库地基（已逐一验证）
 
 ### 3.1 视图层路由：有完整同构先例 ✅
 
-- `app/flowix-web/features/workspace/surface-registry.ts:86-104` — `resolveWorkspaceFileSurfaceKind` 对**特殊后缀优先路由**：`.lib.yaml` → media-library、`.workdocs.yaml` → work-documents、`.table.yaml` → table。`.flowix-canvas` 完全同构。
+- `app/flownote-web/features/workspace/surface-registry.ts:86-104` — `resolveWorkspaceFileSurfaceKind` 对**特殊后缀优先路由**：`.lib.yaml` → media-library、`.workdocs.yaml` → work-documents、`.table.yaml` → table。`.fanvas` 完全同构。
 - `surface-registry.ts:40-60` — registry 声明每个 kind 的 hosts / capabilities（如 `file-image` 带 `fullscreen`/`zoom`）。注意已有 `mindmap` kind（rendererId `plugin-document`，带 fullscreen/fit/zoom）——画布类 surface 已有占位先例。
-- `app/flowix-web/features/surface/workspace-surface-renderers.tsx:73-119` — 渲染器 **lazy 注册表**，新 surface 组件可按需加载（bundle 不进主包）。
+- `app/flownote-web/features/surface/workspace-surface-renderers.tsx:73-119` — 渲染器 **lazy 注册表**，新 surface 组件可按需加载（bundle 不进主包）。
 - 结构参照物：`features/multidimensional-table/`（model + create-file + surface View），画布目录照抄此结构。
 
 ### 3.2 存储层：IO 无障碍，索引有门槛 ⚠️
 
-- `app/flowix-core/src/memo_file/file_io.rs:113/119` — 任意扩展名写入。
-- 索引门槛根在 `app/flowix-core/src/memo_file/ops.rs:123-138`（`IsMd` trait），扩散到 `ops/registration.rs:55`、`ops/reconcile.rs`（5 处）、`note_index.rs:134-140/305-315`。画布文件进笔记索引（获得 FTS/标签/版本）需要动这套门槛，**成本最高，不建议 v1 做**。
-- `app/flowix-core/src/memo_file/versions.rs:138/197` — 版本历史只覆盖 `.md` + `attachments/`，画布文件无版本快照。
+- `app/flownote-core/src/memo_file/file_io.rs:113/119` — 任意扩展名写入。
+- 索引门槛根在 `app/flownote-core/src/memo_file/ops.rs:123-138`（`IsMd` trait），扩散到 `ops/registration.rs:55`、`ops/reconcile.rs`（5 处）、`note_index.rs:134-140/305-315`。画布文件进笔记索引（获得 FTS/标签/版本）需要动这套门槛，**成本最高，不建议 v1 做**。
+- `app/flownote-core/src/memo_file/versions.rs:138/197` — 版本历史只覆盖 `.md` + `attachments/`，画布文件无版本快照。
 
 ### 3.3 同步层：零改动 ✅
 
-`app/flowix-desktop/src/fns_sync/store.rs`：
+`app/flownote-desktop/src/fns_sync/store.rs`：
 
 - 笔记通道（`list_notes` :99）只收 `.md`（`is_markdown` :312）+ 特例 `.agents/mcp.json`，且要求 UTF-8。
-- **文件/附件通道（`list_files` :381）收 notebook 根下所有非 markdown 文件**（`should_skip_attachment_entry` :332-350 只排除隐藏目录、node_modules、`.tmp/.swp/.bak/.lock` 等）。`.flowix-canvas` / `.canvas`（文件名不以 `.` 开头即可）自动被覆盖。
+- **文件/附件通道（`list_files` :381）收 notebook 根下所有非 markdown 文件**（`should_skip_attachment_entry` :332-350 只排除隐藏目录、node_modules、`.tmp/.swp/.bak/.lock` 等）。`.fanvas` / `.canvas`（文件名不以 `.` 开头即可）自动被覆盖。
 - 限制：走文件通道 = 文件级同步语义（无笔记级冲突自愈，仅 conflict 副本），受 `max_attachment_bytes` 上限约束（`fns_sync/service.rs:671`）→ 画布 JSON 必须控制体积。
 
 ### 3.4 附件体系 ✅
@@ -53,7 +53,7 @@
 
 ### 3.5 agent 工具层：已经能用 ✅
 
-`app/flowix-desktop/src/agent_builtin/tools.rs`：
+`app/flownote-desktop/src/agent_builtin/tools.rs`：
 
 - `file_create/read/write`（定义 :190-232，执行 :789-866）支持任意非 md 扩展名（`resolve_writable_file_path` :869-898：1-16 位字母数字扩展名、拒 md 防绕过索引、拒隐藏目录）。
 - 要加结构化画布工具（`canvas_add_node` 等）在 `tool_definitions`(:62) + `execute_inner`(:613) 加分支。v1 可先靠 file_write 全量重写。
@@ -80,9 +80,9 @@
 关键外部事实：
 
 - Excalidraw 官方 React 组件对 **React 19 未声明 peer dep**（excalidraw/excalidraw#9253），运行时实际可用，需 `package.json` overrides 解决安装冲突。
-- Obsidian Excalidraw 插件证明了「本地文件型笔记应用 + 嵌入 Excalidraw」是成熟路线；它默认把画布数据存在 `.excalidraw.md` 里以换取搜索/链接——Flowix 不需要这么做（文件通道天然同步独立 JSON）。
+- Obsidian Excalidraw 插件证明了「本地文件型笔记应用 + 嵌入 Excalidraw」是成熟路线；它默认把画布数据存在 `.excalidraw.md` 里以换取搜索/链接——Flownote 不需要这么做（文件通道天然同步独立 JSON）。
 - `.excalidraw` 文件可直接拖进 excalidraw.com 打开，互操作性是白送的。
-- BlockSuite 虽可独立使用（`@blocksuite/presets`），但其 Yjs 数据模型与 Flowix「纯文件 + FNS 文件同步」哲学根本错位（Yjs 增量 update 与整文件同步互斥），引入即背上协作框架；其价值在于**架构参考**：surface 元素模型 + canvas2d 分层渲染（视口裁剪）+ DOM overlay 文本编辑。
+- BlockSuite 虽可独立使用（`@blocksuite/presets`），但其 Yjs 数据模型与 Flownote「纯文件 + FNS 文件同步」哲学根本错位（Yjs 增量 update 与整文件同步互斥），引入即背上协作框架；其价值在于**架构参考**：surface 元素模型 + canvas2d 分层渲染（视口裁剪）+ DOM overlay 文本编辑。
 - JSON Canvas（jsoncanvas.org，MIT）是 Obsidian 开放的画布文件规范，node/edge 模型覆盖「卡片+连线」，是形态 B 下最值得兼容的互操作格式；不覆盖自由手绘。
 
 ## 5. 推荐路线（分阶段）
@@ -91,7 +91,7 @@
 
 前端 7 处改动 + 一个组件，全部有同构先例：
 
-1. `features/content/model/content-kind.ts:64-104` — 加 `.flowix-canvas` 识别
+1. `features/content/model/content-kind.ts:64-104` — 加 `.fanvas` 识别
 2. `features/editor/code-file.ts:28-43` — `ExternalFileViewKind` 加 `canvas` 分支（或走 surface-registry 特殊后缀路径，二选一）
 3. `features/workspace/surface-registry.ts` — 注册 `file-canvas`（capabilities 含 fullscreen/zoom）
 4. `features/surface/workspace-surface-renderers.tsx` — lazy 注册 CanvasSurfaceView
@@ -120,9 +120,9 @@
 ## 6. 文件格式草案
 
 ```jsonc
-// MyCanvas.flowix-canvas（UTF-8 JSON，元素层兼容 Excalidraw schema）
+// MyCanvas.fanvas（UTF-8 JSON，元素层兼容 Excalidraw schema）
 {
-  "type": "flowix/canvas",
+  "type": "flownote/canvas",
   "version": 1,
   "elements": [ /* Excalidraw elements 原样存放；扩展自定义 element type 时加非冲突字段 */ ],
   "appState": { /* 裁剪后的持久态：viewBackgroundColor 等；丢弃 scroll/zoom 等会话态 */ },
@@ -181,10 +181,10 @@
 ### 10.2 A 的天花板
 
 1. **内容黑洞**：画进白板的内容困在坐标系统里，搜索不到、互链不上、agent 检索不到。
-2. **无独占价值**：画图需求 excalidraw.com 免费直开，嵌 Excalidraw 不构成打开 Flowix 的理由。
+2. **无独占价值**：画图需求 excalidraw.com 免费直开，嵌 Excalidraw 不构成打开 Flownote 的理由。
 3. **agent 价值被 mermaid 稀释**：agent 生成 mermaid 文本更自然（进索引、可 diff），A 剩余价值仅自由草图（低频）。
 
-### 10.3 B 的 Flowix 特有契合点
+### 10.3 B 的 Flownote 特有契合点
 
 1. **互链体系补全**：note-link / note-mention / 标签 / FTS 已有，唯独缺空间维度；B 的反向链接（哪些画布引用此笔记）与现有体系是乘法关系。
 2. **agent 战略舞台**：`canvas_add_node(memoId)` 批量整理笔记是 mermaid 做不到的独占场景。
@@ -195,9 +195,9 @@ B 的最大代价：**卡内渲染**。画布上几十张卡不得各挂一个 T
 ### 10.4 格式演进设计（A→B 增量，非迁移）
 
 ```jsonc
-// MyCanvas.flowix-canvas —— v1 顶层就预留 cards
+// MyCanvas.fanvas —— v1 顶层就预留 cards
 {
-  "type": "flowix/canvas",
+  "type": "flownote/canvas",
   "version": 1,
   "elements": [ /* Phase 1：Excalidraw 兼容手绘层 */ ],
   "cards":   [ /* Phase 2：{ id, x, y, w, h, memoId } 卡片层 */ ]
@@ -208,7 +208,7 @@ B 的最大代价：**卡内渲染**。画布上几十张卡不得各挂一个 T
 - Phase 2（B）：react-flow 骨架 + 卡片只读摘要 + 反向链接 + agent 结构化工具；Excalidraw 降级为卡片画布上的绘图模式。
 - 工期预期：Phase 1 以周计，Phase 2 以月计；桌面先行，移动端只读摘要策略。
 
-一句话：**A 是一个功能，B 是一个平台；Flowix 该要的是平台，而平台的地基恰好就是 A。**
+一句话：**A 是一个功能，B 是一个平台；Flownote 该要的是平台，而平台的地基恰好就是 A。**
 
 ### 10.5 B 的基座选择：不是 Excalidraw 二次开发
 
@@ -218,7 +218,7 @@ B 的真实基座是 **react-flow 骨架 + 自研业务层**（吸收 AFFiNE 的
 
 | 层 | 提供方 | 内容 |
 |---|---|---|
-| 格式层 | 自研 | `.flowix-canvas` schema（cards + elements） |
+| 格式层 | 自研 | `.fanvas` schema（cards + elements） |
 | 画布骨架 | react-flow（MIT） | 视口/缩放平移、节点拖拽、连线交互、框选、小地图 |
 | 卡片节点 | 自研（React 组件） | memo 只读摘要、数据绑定、点开进笔记 surface |
 | 知识层 | 自研 | 反向链接扫描、agent canvas_* 工具 |
@@ -230,9 +230,9 @@ react-flow 替我们免写约 60-70% 的通用画布管道工程；纯自研 can
 
 结论：画布是**独立文件（引用模型）**，卡片通过 memoId 指向笔记，笔记文件零改动；**不采用**「每篇笔记自带/融合一块画布」的 AFFiNE 模型。
 
-### 11.1 AFFiNE 融合模型的前提在 Flowix 不成立
+### 11.1 AFFiNE 融合模型的前提在 Flownote 不成立
 
-AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖其**数据库存储**（每 doc 一个 Yjs 文档存 SQLite，画布元素是 doc 内的 surface block）。「笔记=画布」是存储架构的推论，不可单独移植。Flowix 是 .md 文件 + FNS 文件级同步，融合模型的具体代价：
+AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖其**数据库存储**（每 doc 一个 Yjs 文档存 SQLite，画布元素是 doc 内的 surface block）。「笔记=画布」是存储架构的推论，不可单独移植。Flownote 是 .md 文件 + FNS 文件级同步，融合模型的具体代价：
 
 1. **污染笔记管线**：画布 JSON 进 .md = 进索引 → FTS 坐标噪音、agent note_read 读到垃圾、markdown 可移植性破功。
 2. **冲突风险引向笔记**：画布高频编辑每次重写笔记文件 → 笔记通道同步流量与 conflict 风险；独立文件则把冲突爆炸半径隔离在画布文件内。
@@ -251,7 +251,7 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 
 ### 11.4 缺口与补救
 
-- **画布无版本历史**：versions.rs 已覆盖非 md 的 `attachments/`，机制未锁死 md——把 `.flowix-canvas` 加入快照范围是定向小改（不动 IsMd 门槛），排入 Phase 2。
+- **画布无版本历史**：versions.rs 已覆盖非 md 的 `attachments/`，机制未锁死 md——把 `.fanvas` 加入快照范围是定向小改（不动 IsMd 门槛），排入 Phase 2。
 - **可发现性**：`DocTreeResourceKind` 加 canvas 分类（改动清单第 7 项），避免显示为 Other。
 - 保存位置：画布文件放笔记本目录树用户选择处（与笔记同级），不藏内部目录——必须 FNS 可见。
 
@@ -279,8 +279,8 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 
 已按 §5 路线完成 Phase 0，全部为前端改动（存储/同步/agent 零改动，符合 §3 预判）：
 
-- **文件**：`.flowix-canvas`（UTF-8 JSON，`type: "flowix/canvas"`，v1；`cards` 预留恒空）
-- **surface**：`file-canvas` 注册双 host，capabilities `fullscreen`；`.flowix-canvas` 后缀在 `resolveWorkspaceFileSurfaceKind` 特殊后缀优先路由（先于 `externalFileViewKind`）
+- **文件**：`.fanvas`（UTF-8 JSON，`type: "flownote/canvas"`，v1；`cards` 预留恒空）
+- **surface**：`file-canvas` 注册双 host，capabilities `fullscreen`；`.fanvas` 后缀在 `resolveWorkspaceFileSurfaceKind` 特殊后缀优先路由（先于 `externalFileViewKind`）
 - **模块**：`features/canvas/` —— model（解析/序列化/appState 白名单/位图体积上限：单文件 2MB、总量 8MB、元素 5000）+ 惰性创建 + Excalidraw 视图（800ms 防抖原子写、lifecycle flush、序列化字节不变则跳过写入）
 - **创建入口**：文件树右键「新建」→ 画布；复用 `NotebookDocumentCreateDialog`
 - **依赖**：`@excalidraw/excalidraw@0.18.1`（已声明支持 React 19，无需 overrides）；CSS 随懒加载 chunk 拆分，启动包预算门禁通过
@@ -291,7 +291,7 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 ## 13. Phase 1 进展（2026-10-29）
 
 - **画布图片外链（A1）**：图片不再以 dataURL 内嵌在画布 JSON 中，而是落盘到笔记本 `attachments/`，文档只存 `{ id, mimeType, storageKey }`（key 为笔记本相对路径，跨端有效）。新增 IPC `save_notebook_asset_content`（内联 base64 → 附件，带窗口授权校验）；打开画布时按 key 解析本机路径并读取为 dataURL 喂给 Excalidraw；新插入图片顺序上传；旧的内嵌 dataURL 画布仍可打开，并在下次编辑时自动迁移。
-- **文件树图标（A2）**：`.flowix-canvas` 使用专属 Frame 图标（`content-icon.tsx`），不再显示为通用文档。
+- **文件树图标（A2）**：`.fanvas` 使用专属 Frame 图标（`content-icon.tsx`），不再显示为通用文档。
 - **导出（A4）**：画布左下「导出」菜单支持 `.excalidraw` / SVG / PNG。新增 IPC `write_export_file_bytes`（桌面直接写字节；Android 走 Kotlin `writeBase64ToUri`），文本格式复用 `write_export_file`。
 - 已知取舍：删除画布中的图片不会清理 `attachments/` 里的孤立文件；导出尺寸以当前视口/画布内容为准（Excalidraw 默认导出范围）。
 
@@ -302,7 +302,7 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 两个独立根因：
 
 1. **图片读取路径与保存路径不一致（嵌套笔记本）**
-   `D:\flowix` 与 `D:\flowix\test` 同时注册为笔记本时，保存侧 `resolve_note_owner` 取配置顺序中的**第一个**匹配根（外层 `D:\flowix`），附件因此落在 `D:\flowix\attachments`；而画布视图用自身 scope（画布所在文件夹）拼路径去读 → 路径不存在 → 水合为空。
+   `D:\flownote` 与 `D:\flownote\test` 同时注册为笔记本时，保存侧 `resolve_note_owner` 取配置顺序中的**第一个**匹配根（外层 `D:\flownote`），附件因此落在 `D:\flownote\attachments`；而画布视图用自身 scope（画布所在文件夹）拼路径去读 → 路径不存在 → 水合为空。
    修复：新增 IPC `read_notebook_asset_content(storageKey, notePath)`，由 Rust 按保存侧同一套归属规则解析并读取（并在所有注册根间回退），前端不再自行拼路径。归属规则保持与保存一致（首匹配 + 跨根回退），避免破坏已落盘的历史附件。
 
 2. **打开即写盘导致排序跳动**
@@ -333,17 +333,17 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 
 ### 15.1 修订决策（相对早期讨论）
 
-1. **同扩展名，不另开 `.flowix-board`**。终局是一个画布体系；`.flowix-canvas` 格式顶层预留的 `cards` 字段按原计划启用。渲染路由按内容分流：文件含 `cards` → 统一画布 surface；纯手绘旧文件 → 继续走 Excalidraw surface（零回归）。
+1. **同扩展名，不另开 `.flownote-board`**。终局是一个画布体系；`.fanvas` 格式顶层预留的 `cards` 字段按原计划启用。渲染路由按内容分流：文件含 `cards` → 统一画布 surface；纯手绘旧文件 → 继续走 Excalidraw surface（零回归）。
 2. **Excalidraw 退役计划**。它在 Phase 0/1 的角色是探路车（验证 surface/格式/FNS/移动端/附件链路）+ 保险；终局形态下白板级绘图非必需。P2 起新画布全部走统一 surface，P2.5 提供旧文件一次性转换（freedraw→笔迹、rect/ellipse/diamond→形状、arrow/line→连线、text→便签、image→图片卡，storageKey 直接复用），随后移除依赖（前端包 -1MB+，少一个 React 19 overrides 维护点）。笔迹质量不降级：渲染内核用 `perfect-freehand`（MIT，Excalidraw 同款底层），触屏无压感时 `simulatePressure` 按速度模拟。
 3. **卡内不编辑，三层可见阶梯**。卡面常显 = 标题 + 正文前 200 字摘要（去 markdown 噪音）+ 标签 + 相对时间，L 档卡内可滚动渲染至 ~2000 字；速览 = 全局共享单个只读渲染实例，桌面 hover 300ms / 移动端长按触发；双击 = 正常笔记 surface 编辑，返回画布视口保持。理由：50 张卡全量挂 Tiptap ≈ 打开 +0.5~1.5s 且移动端不可行（document-open 重挂教训的放大版）。
-4. **卡片身份 = `notebookId + relativePath`**，与 note-link（`flowix://open?notebookId=…&f=…`）同一套约定，复用 `tryMatchPhysicalMemoPath` 式解析；`title` 存快照供 stale 展示与重绑候选。`memos` 主键是 `relative_path`，不自造稳定 id。
+4. **卡片身份 = `notebookId + relativePath`**，与 note-link（`flownote://open?notebookId=…&f=…`）同一套约定，复用 `tryMatchPhysicalMemoPath` 式解析；`title` 存快照供 stale 展示与重绑候选。`memos` 主键是 `relative_path`，不自造稳定 id。
 5. **摘要数据通路**：`memos.preview` 取的是首条正文行（≈标题），不能当摘要用；新增批量 IPC `read_note_cards(paths[])`，Rust 侧剥 frontmatter/markdown 噪音返回 `{title, excerpt, tags, wordCount, mtime}`。禁止每卡一次 IPC。
 
-### 15.2 格式扩展（.flowix-canvas v1 内增量）
+### 15.2 格式扩展（.fanvas v1 内增量）
 
 ```jsonc
 {
-  "type": "flowix/canvas", "version": 1,
+  "type": "flownote/canvas", "version": 1,
   "meta": { /* 不变 */ },
   "elements": [ /* 不变：Excalidraw 手绘层（统一 surface 中作只读底图） */ ],
   "cards": [
@@ -352,7 +352,7 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
     { "id": "c_2", "kind": "text",   "x": 0, "y": 260, "w": 240, "h": 150, "text": "…" },
     { "id": "c_3", "kind": "image",  "x": 400, "y": 0, "w": 320, "h": 220, "fileId": "img_01" },
     { "id": "c_4", "kind": "canvas", "x": 800, "y": 0, "w": 320, "h": 220,
-      "notebookId": "nb_1", "path": "sketches/b.flowix-canvas", "title": "白板引用" }
+      "notebookId": "nb_1", "path": "sketches/b.fanvas", "title": "白板引用" }
   ],
   "shapes": [ { "id": "s_1", "shape": "rect|ellipse|diamond", "x": 0, "y": 0, "w": 200, "h": 120,
                 "fill": "blue", "stroke": "solid", "text": "标签" } ],
@@ -382,7 +382,7 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 
 ### 15.5 修订：不做旧画布兼容（2026-10-29，commit 8ff3b8ff）
 
-产品决策：只考虑新版画布。§15.1 第 1 条的「纯手绘旧文件继续走 Excalidraw surface」和 15.3 P2.5 的旧文件转换器**作废**——所有 `.flowix-canvas` 文件一律渲染卡片板；旧文件的 `elements` 数据仍在磁盘上（model 透传保留），但不再渲染。Excalidraw surface、lazy loader 与 `@excalidraw/excalidraw` 依赖当日移除（前端包 -1MB+ 提前兑现）。笔迹/形状能力按 §15.3 P2.3 自研计划不变。
+产品决策：只考虑新版画布。§15.1 第 1 条的「纯手绘旧文件继续走 Excalidraw surface」和 15.3 P2.5 的旧文件转换器**作废**——所有 `.fanvas` 文件一律渲染卡片板；旧文件的 `elements` 数据仍在磁盘上（model 透传保留），但不再渲染。Excalidraw surface、lazy loader 与 `@excalidraw/excalidraw` 依赖当日移除（前端包 -1MB+ 提前兑现）。笔迹/形状能力按 §15.3 P2.3 自研计划不变。
 
 P2.1 骨架实测记录（桌面 dev + CDP）：板打开 171ms；打开不写盘（fitView 触发 onMoveEnd 的坑用「载入时 seed 首个 move-end」修复）；卡片拖拽与平移均经字节不变跳写落盘；视口持久化恢复；双击笔记卡经 `openNoteByNotebookPath` 打开；老画布开空板。已知局限：固定 bottom→top 锚点对右上方向连线出现小环，P2.2 换浮动锚点。
 
@@ -510,7 +510,7 @@ APK（x86_64 debug）装到 `Pixel_7` 模拟器后暴露一串只在触控下出
 
 - 从 `@excalidraw/excalidraw` 包中提取单文件 woff2 并随包分发（+193KB）：**Virgil**（Excalidraw 最早的手绘拉丁字体）、**Liberation Sans**（Helvetica 度量）、**Cascadia Code**（等宽）。中文仍走系统回退：手写体槽位用楷体。
 - 字体行对齐 Obsidian 五格：手写（笔尖）/ 正常（A）/ 代码（</>）/ 粗体（B，weight 800）/ 衬线（A）；`BoardFontFamily` 增加 `bold`，文字元素按面渲染字重。
-- 验证：`document.fonts.check` 三款均 true；"Hello Flowix 手写体" 拉丁部分是 Virgil、中文是楷体；面板显示五格。
+- 验证：`document.fonts.check` 三款均 true；"Hello Flownote 手写体" 拉丁部分是 Virgil、中文是楷体；面板显示五格。
 - 说明：Excalifont（Obsidian 新默认手写体）在包内是 7 个 hashed 子集且无 unicode-range 清单，无法直接内联；Virgil 是单文件且在 Obsidian 列表里仍可选用，故选它。
 
 ### 15.21 补充：触控拖拽收起面板（2026-10-30）
@@ -567,10 +567,10 @@ APK（x86_64 debug）装到 `Pixel_7` 模拟器后暴露一串只在触控下出
 另外：`BoardCard` 新增 `notebookName` 快照。notebook id 是设备本地的，画布经 FNS 同步到另一台设备后 id 对不上；`absolutePathOf` 现在按「id → name → 唯一笔记本」依次解析，跨端卡片仍能找到笔记。
 
 5. **移动端双击**：触摸事件在 `touch-action:none` 的画布里不会合成 `dblclick`，`onNodeDoubleClick` 在安卓上永远不触发。新增 `onNodeClick` 的触摸双击检测（同一节点 350ms 内两次 tap，`lastPointerTypeRef === 'touch'` 才启用），桌面仍走 `dblclick`，不会重复打开。桌面 CDP 触摸模拟验证：两次 touch 后画布卸载、笔记在主栏打开。
-6. **跨端验证**：Android 模拟器（x86_64）安装后打开 `笔记卡片演示.flowix-canvas`，全文卡/片段卡渲染正确（callout 颜色+图标、任务列表、表格），连线为实线+箭头；真触摸选中卡片后单指滑动 `scrollTop 0→333`，卡片 transform 不变；三端一致。
+6. **跨端验证**：Android 模拟器（x86_64）安装后打开 `笔记卡片演示.fanvas`，全文卡/片段卡渲染正确（callout 颜色+图标、任务列表、表格），连线为实线+箭头；真触摸选中卡片后单指滑动 `scrollTop 0→333`，卡片 transform 不变；三端一致。
 
 7. **连线可删除**：此前只有 `onNodesDelete`，React Flow 的边删除没有落点。新增 `onEdgesDelete` + 显式边选中态（`onEdgeClick`/`onPaneClick` + `selectedEdgeId`，选中为品牌色 2.5px），工具栏出现「删除连线」按钮（移动端可点），Delete/Backspace 快捷键同样生效。选中边时节点选择被清空，避免一次删除两类元素。
-8. **实时镜像缓存键**：`absolutePathOf` 之前返回混合斜杠路径（`D:\flowix/test/x.md`），而实时 buffer 用 `canonicalPath`（`D:/flowix/test/x.md`）写入 `contentHtmlRef`，两者键不一致——实时渲染写进去的内容卡片读不到，只有保存后的磁盘刷新看起来"更新"。修复：`absolutePathOf`/`cardContentKey` 一律 canonical，磁盘刷新遇到比文件 mtime 更新的实时 buffer 时优先用 buffer（防自动保存把卡面回退到旧内容）。
+8. **实时镜像缓存键**：`absolutePathOf` 之前返回混合斜杠路径（`D:\flownote/test/x.md`），而实时 buffer 用 `canonicalPath`（`D:/flownote/test/x.md`）写入 `contentHtmlRef`，两者键不一致——实时渲染写进去的内容卡片读不到，只有保存后的磁盘刷新看起来"更新"。修复：`absolutePathOf`/`cardContentKey` 一律 canonical，磁盘刷新遇到比文件 mtime 更新的实时 buffer 时优先用 buffer（防自动保存把卡面回退到旧内容）。
 
 ### 15.26 移动端卡片拖动（2026-10-30）
 

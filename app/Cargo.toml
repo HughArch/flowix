@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "flowix-desktop",
-    "flowix-core",
-    "flowix-plugin-runtime",
-    "flowix-fns",
-    "flowix-cli",
-    "flowix-installer-helper",
+    "flownote-desktop",
+    "flownote-core",
+    "flownote-plugin-runtime",
+    "flownote-fns",
+    "flownote-cli",
+    "flownote-installer-helper",
 ]
 
 # 锁定共用依赖到同一版本 ── 避免 backend / cli 走不一致版本。
@@ -16,12 +16,12 @@ edition = "2021"
 
 # 锁定共用依赖到同一版本 ── 避免 backend / cli 走不一致版本。
 [workspace.dependencies]
-flowix-core = { path = "flowix-core" }
-flowix-plugin-runtime = { path = "flowix-plugin-runtime" }
-flowix-fns = { path = "flowix-fns" }
+flownote-core = { path = "flownote-core" }
+flownote-plugin-runtime = { path = "flownote-plugin-runtime" }
+flownote-fns = { path = "flownote-fns" }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: JSON object keys keep document order — required for
-# byte-stable `.flowix-canvas` round-trips (see flowix-core::canvas).
+# byte-stable `.fanvas` round-trips (see flownote-core::canvas).
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 toml = "0.8"
@@ -48,7 +48,7 @@ minisign-verify = "0.2"
 clap = { version = "4.5", features = ["std"] }
 clap_complete = "4.5"
 shell-words = "1.1"
-# Windows console codepage 切 UTF-8 用 ── 仅 flowix-cli 直接依赖。
+# Windows console codepage 切 UTF-8 用 ── 仅 flownote-cli 直接依赖。
 # Win32_Foundation 必须开: SetConsoleCP/SetConsoleOutputCP 返回 BOOL, 被该 feature 门控。
 windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }
 rusqlite = { version = "0.31", features = ["bundled"] }

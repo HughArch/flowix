@@ -60,7 +60,7 @@ verify_dmg_contents() (
     return 1
   fi
 
-  for name in flowix-cli; do
+  for name in flownote-cli; do
     binary="$mounted_app/Contents/MacOS/$name"
     if [ ! -x "$binary" ]; then
       echo "ERROR: packaged sidecar is missing or not executable: $binary" >&2

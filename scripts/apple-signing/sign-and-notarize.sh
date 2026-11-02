@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full Apple Developer ID signing + notarization pipeline for Flowix.
+# Full Apple Developer ID signing + notarization pipeline for Flownote.
 #
 # Pre-requisites on the machine running this script:
 #   • The Developer ID Application identity is in the login Keychain
@@ -34,13 +34,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DESKTOP_DIR="$REPO_ROOT/app/flowix-desktop"
+DESKTOP_DIR="$REPO_ROOT/app/flownote-desktop"
 ENTITLEMENTS="$DESKTOP_DIR/entitlements.plist"
 VERIFY_RELEASE="$REPO_ROOT/scripts/verify-macos-release.sh"
 
 # CARGO_TARGET_DIR is exported by scripts/build-cli.mjs - usually
 # $REPO_ROOT/.build/cargo-target. Tauri's bundle output goes there, NOT
-# under app/flowix-desktop/target/release.
+# under app/flownote-desktop/target/release.
 # `tauri build --target <triple>` 把 bundle 落到 $CARGO_TARGET_DIR/<triple>/release/bundle/,
 # 跟 host 路径 ($CARGO_TARGET_DIR/release/bundle/) 分开, 两个 target 互不覆盖。
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/.build/cargo-target}"
@@ -120,7 +120,7 @@ cd "$REPO_ROOT"
 
 # ---- 1. Build ----
 if [ -z "${SKIP_BUILD:-}" ]; then
-  echo "==> [build] Building Flowix.app + Flowix.dmg for ${MACOS_TARGETS[*]} (3-6 min)"
+  echo "==> [build] Building Flownote.app + Flownote.dmg for ${MACOS_TARGETS[*]} (3-6 min)"
   echo "         (build-tauri-production.mjs builds and signs both targets per tauri.conf.production.json)"
   if [ ! -d node_modules ]; then
     npm ci --no-audit --no-fund
@@ -128,7 +128,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
   # Apple's RFC 3161 timestamp service is intermittently unavailable, and Tauri's
   # internal codesign step uses it. Wrap the build in a retry loop so a transient
   # timestamp hiccup doesn't kill the whole release (memory
-  # `flowix-release-build-detached-timestamp-retry`).
+  # `flownote-release-build-detached-timestamp-retry`).
   bash "$SCRIPT_DIR/with-timestamp-retry.sh" -- npm run tauri:build:prod
 else
   echo "==> [build] Skipping build (SKIP_BUILD=1)"

@@ -265,7 +265,7 @@ export class SkillCatalogService {
     if (typeof selectedName !== 'string' || !selectedName.trim()) throw new InvalidInputError('selector', 'must include a skill name')
     if (!this.configService) throw new CapabilityUnavailableError('skills-config')
     const result = await this.configService.writeValue({
-      namespace: 'flowix-appserver',
+      namespace: 'flownote-appserver',
       path: ['skills', 'enabled', selectedName.trim()],
       value: enabled,
       expectedRevision,
@@ -278,7 +278,7 @@ export class SkillCatalogService {
     if (!Array.isArray(extraRoots) || !extraRoots.every(root => typeof root === 'string' && root.trim())) throw new InvalidInputError('extraRoots', 'must be an array of non-empty strings')
     if (!this.configService) throw new CapabilityUnavailableError('skills-config')
     const result = await this.configService.writeValue({
-      namespace: 'flowix-appserver',
+      namespace: 'flownote-appserver',
       path: ['skills', 'extraRoots'],
       value: extraRoots.map(root => root.trim()),
       expectedRevision,

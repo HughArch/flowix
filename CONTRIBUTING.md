@@ -1,4 +1,4 @@
-# Contributing to Flowix
+# Contributing to Flownote
 
 ## Branch naming
 
@@ -41,7 +41,7 @@ commits is harder to read than one with three structured commits.
   `main` itself until approved).
 - CI must be green before merge.
 - At least one approval; if you don't have a reviewer available, mark the
-  PR `draft:` and tag `@flowix/reviewers` once ready.
+  PR `draft:` and tag `@flownote/reviewers` once ready.
 - Don't `force-push` after review: it makes re-review painful. Use
   `git commit --fixup` and `git rebase --autosquash` if you must rebase.
 
@@ -65,7 +65,7 @@ changes — it's how reviewers skip what they don't need to read.
 
 Use `npm run release:updater` for local updater publication. It verifies the
 signed Tauri updater archives and manifests before uploading them to R2; full
-releases also rebuild/deploy `flowix-home`, while partial releases leave the
+releases also rebuild/deploy `flownote-home`, while partial releases leave the
 website untouched. See `docs/UPDATER-RELEASE.md` for the release commands.
 
 ## Local workflow
@@ -89,7 +89,7 @@ If a branch is fully stale (no risk of conflict), just delete it with
 
 - Never commit `.env`, signing keys, OAuth tokens, or `~/.tauri/keys/*`.
   `.gitignore` already guards the common spots.
-- For local dev, use `export FLOWIX_*` and friends; never `git add` them.
+- For local dev, use `export FLOWNOTE_*` and friends; never `git add` them.
 - For CI, route through repository secrets
   (`Settings → Secrets and variables → Actions`).
 

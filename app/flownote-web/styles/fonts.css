@@ -1,0 +1,115 @@
+/* Flownote runs in modern WebViews, so only the used Latin weights and woff2
+ * assets are bundled. CJK and less common scripts intentionally use the
+ * platform font stack. */
+/* Put this face before system emoji fonts in each app stack. The local order
+ * prefers Noto Color Emoji, with the platform color emoji fonts as fallback. */
+@font-face {
+	font-family: 'Flownote Small Emoji';
+	font-style: normal;
+	font-weight: 400;
+	src:
+		local('Segoe UI Emoji'),
+		local('Noto Color Emoji'),
+		local('Apple Color Emoji');
+	size-adjust: 86%;
+	unicode-range: U+1F000-1FAFF, U+2600-27FF, U+FE0F, U+20E3;
+}
+
+@font-face {
+	font-family: 'Flownote Tag Icon';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('../assets/fonts/FlownoteTagIcon.woff2') format('woff2');
+}
+
+/* Preserve the editable Windows icon's existing line metrics and glyph.
+ * Tag text now follows the editor font; separate background wrappers align
+ * the backgrounds independently of these metrics. Standalone icons keep
+ * the original face above. */
+@font-face {
+	font-family: 'Flownote Tag Icon Consolas';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('../assets/fonts/FlownoteTagIcon.woff2') format('woff2');
+	ascent-override: 84.6328125%;
+	descent-override: 23.08984375%;
+	line-gap-override: 0%;
+}
+
+.flownote-tag-icon {
+	display: inline-block;
+	font-family: 'Flownote Tag Icon', var(--editor-font-family, var(--font-sans));
+	font-size: 1em;
+	font-style: normal;
+	font-weight: 400;
+	line-height: 1;
+	color: currentColor;
+	user-select: none;
+}
+
+.flownote-tag-icon--prefix {
+	margin-inline-end: var(--document-tag-hash-gap, 0.09em);
+}
+
+.flownote-tag-svg-icon {
+	display: block;
+	flex: 0 0 auto;
+}
+
+@font-face { font-family: 'Inter'; font-style: normal; font-display: swap; font-weight: 300; src: url('@fontsource/inter/files/inter-latin-300-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-display: swap; font-weight: 400; src: url('@fontsource/inter/files/inter-latin-400-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-display: swap; font-weight: 500; src: url('@fontsource/inter/files/inter-latin-500-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-display: swap; font-weight: 600; src: url('@fontsource/inter/files/inter-latin-600-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-display: swap; font-weight: 700; src: url('@fontsource/inter/files/inter-latin-700-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-display: swap; font-weight: 800; src: url('@fontsource/inter/files/inter-latin-800-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: italic; font-display: swap; font-weight: 300; src: url('@fontsource/inter/files/inter-latin-300-italic.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: italic; font-display: swap; font-weight: 400; src: url('@fontsource/inter/files/inter-latin-400-italic.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: italic; font-display: swap; font-weight: 500; src: url('@fontsource/inter/files/inter-latin-500-italic.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: italic; font-display: swap; font-weight: 600; src: url('@fontsource/inter/files/inter-latin-600-italic.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: italic; font-display: swap; font-weight: 700; src: url('@fontsource/inter/files/inter-latin-700-italic.woff2') format('woff2'); }
+
+/* Nunito Sans - variable font (300-800 weight), kept for the optional
+ * document font preference.
+ * woff2 + Latin subset (Nunito 不含 CJK 字形, 中文走 font-stack 系统回退).
+ * 由 scripts/subset-fonts.sh 从原 TTF (assets/fonts/NunitoSans*.ttf) 转出,
+ * 字重 / 字宽 / opsz 轴保留. 原 TTF 留在仓库作为重新生成的源, 不被引用故
+ * 不进打包产物。font-display: swap 让首屏先用系统回退字体绘制, 字体就绪后
+ * 无闪烁替换。 */
+@font-face {
+	font-family: 'Nunito Sans';
+	src: url('../assets/fonts/NunitoSans.woff2') format('woff2');
+	font-weight: 300 800;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: 'Nunito Sans';
+	src: url('../assets/fonts/NunitoSans-Italic.woff2') format('woff2');
+	font-weight: 300 800;
+	font-style: italic;
+	font-display: swap;
+}
+
+/* ── Canvas (card board) text faces ───────────────────────────────────────
+ * Bundled so the board looks the same on Windows, Android and macOS: Virgil
+ * (Excalidraw's original hand-drawn face), Liberation Sans (Helvetica
+ * metrics) and Cascadia Code. CJK has no glyphs in these files and falls
+ * back to the handwriting/serif stacks declared per face. */
+@font-face {
+	font-family: 'Flownote Canvas Sans';
+	src: url('../assets/fonts/CanvasSans.woff2') format('woff2');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: 'Flownote Canvas Mono';
+	src: url('../assets/fonts/CanvasMono.woff2') format('woff2');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}

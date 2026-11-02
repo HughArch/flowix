@@ -1,7 +1,7 @@
 # Workspace drag and drop
 
 Cross-surface drag sessions use the foundation coordinator in
-`app/flowix-web/shared/drag-drop/drag-drop-coordinator.ts`. It owns one active
+`app/flownote-web/shared/drag-drop/drag-drop-coordinator.ts`. It owns one active
 session per WebView, registered drop targets, target priority, preview cleanup,
 Escape/window-blur cancellation, and a fresh target lookup on release. It has no
 feature imports and treats dragged items as opaque data.

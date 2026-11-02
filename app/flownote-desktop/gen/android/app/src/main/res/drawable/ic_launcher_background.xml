@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Aurora gradient for the adaptive launcher icon. Mirrors the desktop tile
+     gradient in app/flownote-web/assets/app-icon-source.png (1024 viewBox →
+     108dp viewport). Keep both in sync when the icon artwork changes. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="11.6"
+                android:startY="7.4"
+                android:endX="98.1"
+                android:endY="105.5">
+                <item android:offset="0" android:color="#FFB092F2" />
+                <item android:offset="0.5" android:color="#FFC793E2" />
+                <item android:offset="1" android:color="#FFF0A1A9" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="28.5"
+                android:centerY="21.1"
+                android:gradientRadius="67.5">
+                <item android:offset="0" android:color="#29FFFFFF" />
+                <item android:offset="1" android:color="#00FFFFFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

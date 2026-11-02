@@ -10,7 +10,7 @@ program files for remaining locks. An unresponsive desktop or an external lock
 blocks installation with an actionable error; external MCP hosts are not killed.
 The helper does not provide an atomic upgrade or rollback guarantee.
 
-Windows runtime state belongs in `%LOCALAPPDATA%\FlowixData`; existing Pi sessions
+Windows runtime state belongs in `%LOCALAPPDATA%\FlownoteData`; existing Pi sessions
 are migrated once during Pi initialization without overwriting destination data.
 When both stores exist, each conversation resolves its existing history in place;
 only a conversation with competing histories is blocked. Path getters do not migrate.
@@ -40,7 +40,7 @@ partial-install semantics; it does not claim to restore the previous version.
 ## Operational notes
 
 - Setup and uninstall run NSIS and the bundled native Rust helper only. They do
-  not invoke PowerShell, cmd.exe or taskkill. The flowix.cmd shim is written for
+  not invoke PowerShell, cmd.exe or taskkill. The flownote.cmd shim is written for
   later CLI use, not executed by setup. PowerShell is used by development tests.
 - Legacy desktop versions have no maintenance event listener. Save and exit
   those versions manually when prompted. The installer never force-kills a
@@ -56,7 +56,7 @@ partial-install semantics; it does not claim to restore the previous version.
 
 ## Validation (2026-10-10)
 
-- Native helper: 8 real Windows lifecycle tests passed, including `Flowix Dev.exe`
+- Native helper: 8 real Windows lifecycle tests passed, including `Flownote Dev.exe`
   and missing/out-of-scope executable arguments; 2 ignored functions are
   child-process fixtures explicitly invoked by those tests.
 - Runtime migration: 5 tests passed, covering nested sessions, coexisting stores,
@@ -68,7 +68,7 @@ partial-install semantics; it does not claim to restore the previous version.
   and Pi recovery were source-reviewed; no real signed update was installed.
 - The actual tauri-bundler 2.9.2 template compiled and passed disposable NSIS
   install/upgrade/uninstall tests, including an open working directory, normal
-  shutdown of `Flowix Dev.exe`, active CLI, locked DLL, preserved data and logs.
+  shutdown of `Flownote Dev.exe`, active CLI, locked DLL, preserved data and logs.
   Windows CI is configured to repeat this test against checksum-verified upstream
   sources and NSIS tools; the hosted workflow has not been run from this checkout.
   The fixture rejects a changed Tauri CLI lockfile version until its bundler pin
@@ -80,7 +80,7 @@ partial-install semantics; it does not claim to restore the previous version.
   integration. The queued preparation guard fixes cancellation between sending
   and receiving document-save completion.
 
-Run cargo test --manifest-path app/Cargo.toml -p flowix-installer-helper on Windows.
+Run cargo test --manifest-path app/Cargo.toml -p flownote-installer-helper on Windows.
 Then run scripts/test-windows-installer.ps1 with -Helper pointing to the compiled
 helper and -ProcessFixture pointing to app/target/debug/deps/lifecycle-*.exe.
 First run `npm ci --prefix scripts/installer-fixture --ignore-scripts` to install
@@ -88,4 +88,4 @@ the isolated template renderer. The suite downloads checksum-pinned Tauri bundle
 2.9.2, NSIS 3.11 and nsis-tauri-utils 0.5.3 into a temporary tool cache. It requires
 Node, PowerShell and tar. It uses GUID-specific registry keys and temporary files,
 disables shortcuts and the user PATH hook, and redirects legacy updater markers.
-It does not install or stop a real Flowix application.
+It does not install or stop a real Flownote application.

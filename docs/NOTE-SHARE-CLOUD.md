@@ -7,17 +7,17 @@
 ## 1. 背景与产品决策
 
 FNS 服务端已有完整的分享模块（`user_share` 表 + REST API + 公开分享页 `/share/:id/:token`），
-Flowix 客户端完全没有消费。本设计把「分享笔记」接入 Flowix 桌面/移动端，复用服务端能力，
+Flownote 客户端完全没有消费。本设计把「分享笔记」接入 Flownote 桌面/移动端，复用服务端能力，
 不引入新服务端功能。
 
 已拍板的决策：
 
-1. **优先客户端接入**（本设计 Phase 1），服务端分享页对 Flowix 自有语法的渲染兼容放
-   Phase 2（见 §6）——Phase 1 分享出去的页面：基础 Markdown 完整可用，Flowix 特有语法
+1. **优先客户端接入**（本设计 Phase 1），服务端分享页对 Flownote 自有语法的渲染兼容放
+   Phase 2（见 §6）——Phase 1 分享出去的页面：基础 Markdown 完整可用，Flownote 特有语法
    降级显示（详见 §5），不阻塞分享功能上线。
 2. **v1 只分享 `.md` 正文**。canvas / collection / 附件直链不在范围内（附件已由服务端
    在创建分享时自动解析进 `resources` 并重写链接，无需客户端参与）。
-3. **REST 调用放 Rust 侧**（`flowix-core::fns_share`，阻塞 reqwest），前端只走 IPC——
+3. **REST 调用放 Rust 侧**（`flownote-core::fns_share`，阻塞 reqwest），前端只走 IPC——
    与 `fns_history`（docs/VERSION-HISTORY-CLOUD.md §5.3）同一架构分层。
 4. **入口**：文档右上角 `...` 菜单新增「分享」项，门控与云端历史一致
    （notebook 已绑定 FNS 且凭据齐备）。v1 不做笔记列表右键批量分享、不做 WebGUI 式分享管理页。
@@ -38,8 +38,8 @@ Flowix 客户端完全没有消费。本设计把「分享笔记」接入 Flowix
 关键行为：
 
 - **pathHash 是主键**：服务端用 `note.path_hash` 查笔记，客户端必须用与同步引擎一致的
-  JS 兼容 32 位哈希（`flowix-fns::hash::encode_hash32`）。`flowix-core` 不依赖
-  `flowix-fns`（依赖方向不允许），在 `fns_share.rs` 内镜像实现 + 相同测试向量（`"abc" → "96354"`）。
+  JS 兼容 32 位哈希（`flownote-fns::hash::encode_hash32`）。`flownote-core` 不依赖
+  `flownote-fns`（依赖方向不允许），在 `fns_share.rs` 内镜像实现 + 相同测试向量（`"abc" → "96354"`）。
 - **path 约定**：notebook 相对路径、正斜杠（同 fns_history 的 `path.replace('\\', "/")`）。
 - **token 不入库**：每次创建/查询用 SID 方案现签，客户端不要持久化 token，只拼 URL。
 - **分享 URL**：`{baseUrl}/share/{id}/{token}`（`baseUrl` 服务端响应直接给出，取自
@@ -75,14 +75,14 @@ Flowix 客户端完全没有消费。本设计把「分享笔记」接入 Flowix
 ### 4.1 分层（完全对齐 fns_history 模式）
 
 ```
-flowix-core/src/fns_share.rs        # REST 客户端（阻塞 reqwest）+ path_hash 镜像实现
-flowix-desktop/src/fns_sync/
+flownote-core/src/fns_share.rs        # REST 客户端（阻塞 reqwest）+ path_hash 镜像实现
+flownote-desktop/src/fns_sync/
   binding.rs                        # 从 history.rs 抽出 resolve_binding / validate_relative_path / api_error
   share.rs                          # spawn_blocking 适配 + 视图类型
   commands.rs                       # 新增 Tauri 命令
 app/bootstrap.rs                    # 注册命令
-flowix-web/platform/tauri/client/fns.ts   # 类型 + fns.shareCreate/... 方法
-flowix-web/features/document/components/document-share-dialog.tsx  # 分享弹窗
+flownote-web/platform/tauri/client/fns.ts   # 类型 + fns.shareCreate/... 方法
+flownote-web/features/document/components/document-share-dialog.tsx  # 分享弹窗
 document-titlebar-actions.tsx       # 菜单入口
 ```
 
@@ -116,27 +116,27 @@ document-titlebar-actions.tsx       # 菜单入口
 分享页渲染器在 WebGUI 仓库 `src/components/note/markdown-editor.tsx`：
 react-markdown + remark-gfm/math/breaks + rehype-katex/highlight/raw/sanitize + `transformObsidianSyntax`。
 
-| Flowix 功能 | 存储语法 | 分享页现状 |
+| Flownote 功能 | 存储语法 | 分享页现状 |
 |---|---|---|
 | 多栏布局 | `::: columns` / `:::: column` fenced div | ❌ 围栏行裸文本直接显示 |
 | 折叠块 toggle | `::: toggle [collapsed]` fenced div | ❌ 同上，正文平铺不可折叠 |
-| Flowix callout | `::: callout icon="…"` fenced div | ❌ 同上（分享页只认 Obsidian blockquote callout） |
-| 行背景色 | 块尾行内 `<!-- flowix:block-bg {…} -->` | ⚠️ 注释被剥离，颜色丢失、文本正常 |
-| 文字颜色 | `==text==<!-- flowix:text {…} -->` | ⚠️ `<mark>` 保留、颜色丢失 |
-| 笔记互链 | `[label](flowix://open?…)` | ⚠️ sanitize 协议白名单拒绝，链接失效 |
+| Flownote callout | `::: callout icon="…"` fenced div | ❌ 同上（分享页只认 Obsidian blockquote callout） |
+| 行背景色 | 块尾行内 `<!-- flownote:block-bg {…} -->` | ⚠️ 注释被剥离，颜色丢失、文本正常 |
+| 文字颜色 | `==text==<!-- flownote:text {…} -->` | ⚠️ `<mark>` 保留、颜色丢失 |
+| 笔记互链 | `[label](flownote://open?…)` | ⚠️ sanitize 协议白名单拒绝，链接失效 |
 | Web card | `::webcard {json}` | ❌ 裸文本 |
 | 数学/Mermaid/表格/任务列表/附件/`==高亮==`/`#tag` | 标准 + Obsidian 语法 | ✅ 正常（附件图片已被服务端重写为 share file URL） |
 
-Phase 2 方向（WebGUI 仓库，先不动）：在 `transformObsidianSyntax` 内新增 Flowix 预转换——
-fenced div 扫描直接移植 `flowix-web/features/editor/extensions/fenced-div.ts` 的 CommonMark
+Phase 2 方向（WebGUI 仓库，先不动）：在 `transformObsidianSyntax` 内新增 Flownote 预转换——
+fenced div 扫描直接移植 `flownote-web/features/editor/extensions/fenced-div.ts` 的 CommonMark
 围栏平衡规则（放在代码块占位符提取之后），映射为 `div/details+summary` + sanitize 白名单；
 注释类语法 v1 剥离即可。
 
 ## 6. 里程碑
 
 - **Phase 1（本仓库）**：REST 客户端 + IPC + 分享弹窗 + 菜单入口。✅ 已实现（2026-10-28，随本设计稿提交）：
-  `flowix-core/src/fns_share.rs`（含 path_hash 镜像测试向量）、`fns_sync/{binding,share}.rs`
+  `flownote-core/src/fns_share.rs`（含 path_hash 镜像测试向量）、`fns_sync/{binding,share}.rs`
   （binding 从 history.rs 抽出共用）、6 条 Tauri 命令、`fns.ts` 客户端、`document-share-dialog.tsx`
   + 组件测试、菜单入口、i18n 双语言。
-- **Phase 2（WebGUI 仓库 `feat/flowix-syntax-share`）**：分享页 Flowix 语法兼容层，产物回灌服务端 `frontend/`。
+- **Phase 2（WebGUI 仓库 `feat/flownote-syntax-share`）**：分享页 Flownote 语法兼容层，产物回灌服务端 `frontend/`。
 - **Phase 3（可选）**：笔记列表「已分享」角标（`fns_share_paths` + WSS `ShareSyncRefresh`）、分享管理页、短链。

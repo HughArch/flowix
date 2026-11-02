@@ -6,17 +6,17 @@
 
 ### 1.1 事实链（两侧代码已核实）
 
-**客户端（flowix）**
+**客户端（flownote）**
 
 | 事实 | 位置 |
 |---|---|
-| 冲突检测：push 时服务端回业务码 530 → `FnsError::Conflict { path, payload }` | `app/flowix-fns/src/sync.rs:203-217` |
-| 530 payload 携带三方内容：`ConflictPayload { server_content, base_content, server_hash }` | `app/flowix-fns/src/protocol.rs:313-326` |
-| 冲突解决流程**不存在**：530 只记入 `report.conflicts`，无后续动作 | `app/flowix-fns/src/engine.rs:261-265` |
-| 协议要求的 `isConflictResolved=true` 重推从未发出（恒 false） | `app/flowix-fns/src/sync.rs:198` |
-| 同步策略硬编码 `NewTimeMerge`（可配置 UI 曾上线后被 revert，8ecaf805） | `app/flowix-desktop/src/fns_sync/config.rs:199-200` |
-| 现成三方合并能力：保守合并，冲突绝不写标记进原文件 | `app/flowix-core/src/text_merge.rs:131` `merge_markdown(base, local, remote) -> MergeOutcome` |
-| 同步状态：`<notebook>/.flowix/sync-state.json`，只有 `path → {content_hash, mtime}` 快照 + `last_time` 游标，push 时 content_hash 兼任 `base_hash` | `app/flowix-fns/src/state.rs:25-54, 87-94` |
+| 冲突检测：push 时服务端回业务码 530 → `FnsError::Conflict { path, payload }` | `app/flownote-fns/src/sync.rs:203-217` |
+| 530 payload 携带三方内容：`ConflictPayload { server_content, base_content, server_hash }` | `app/flownote-fns/src/protocol.rs:313-326` |
+| 冲突解决流程**不存在**：530 只记入 `report.conflicts`，无后续动作 | `app/flownote-fns/src/engine.rs:261-265` |
+| 协议要求的 `isConflictResolved=true` 重推从未发出（恒 false） | `app/flownote-fns/src/sync.rs:198` |
+| 同步策略硬编码 `NewTimeMerge`（可配置 UI 曾上线后被 revert，8ecaf805） | `app/flownote-desktop/src/fns_sync/config.rs:199-200` |
+| 现成三方合并能力：保守合并，冲突绝不写标记进原文件 | `app/flownote-core/src/text_merge.rs:131` `merge_markdown(base, local, remote) -> MergeOutcome` |
+| 同步状态：`<notebook>/.flownote/sync-state.json`，只有 `path → {content_hash, mtime}` 快照 + `last_time` 游标，push 时 content_hash 兼任 `base_hash` | `app/flownote-fns/src/state.rs:25-54, 87-94` |
 
 **服务端（fast-note-sync-service）**
 
@@ -51,7 +51,7 @@
 ┌─ 客户端（全部改动主体） ──────────────────────────────────────────┐
 │                                                                    │
 │  push ──530──▶ ConflictDetector 记录 pending conflict              │
-│                  │  （server/base content 落 .flowix/conflicts/）  │
+│                  │  （server/base content 落 .flownote/conflicts/）  │
 │                  ▼                                                 │
 │           auto_resolve：text_merge::merge_markdown                 │
 │             ├─ Merged ──▶ 本地写回 + push(isConflictResolved=true) │
@@ -81,7 +81,7 @@
 **存储**：内容放独立目录，索引放 sync-state，避免 `sync-state.json` 膨胀。
 
 ```
-<notebook>/.flowix/conflicts/<sha256(path)>.json
+<notebook>/.flownote/conflicts/<sha256(path)>.json
 {
   "path": "notes/test.md",
   "server_content": "...",     // 530 payload
@@ -142,7 +142,7 @@ resolve 时**重读本地文件**（挂起期间用户可能又编辑过，以�
 | 「使用我的」 | — | 当前文件内容 | — | 当前本地内容 |
 | 「使用云端」 | — | — | server_content | server_content（同时写回本地文件） |
 
-自动合并复用 `flowix-core::text_merge::merge_markdown`：保守策略（`Merged | Conflict | Unsupported`），冲突永不写标记进原文件——与「静默解决必须零信息损失」的要求一致。`Unsupported`（如非 UTF-8）按 `Conflict` 处理进 UI。
+自动合并复用 `flownote-core::text_merge::merge_markdown`：保守策略（`Merged | Conflict | Unsupported`），冲突永不写标记进原文件——与「静默解决必须零信息损失」的要求一致。`Unsupported`（如非 UTF-8）按 `Conflict` 处理进 UI。
 
 服务端配合语义（现成，无需改动）：
 
@@ -159,7 +159,7 @@ resolve 时**重读本地文件**（挂起期间用户可能又编辑过，以�
 - **入口**：状态栏徽标（pending 数量）+ 同步历史条目；主窗口内冲突中心列表（path、检测时间、来源设备）。
 - **每条操作**：使用我的 / 使用云端 / 智能合并 / 打开临时对比笔记（把 server/base/local 三个版本生成只读临时笔记供查阅，v2 可升级为编辑器内 diff 视图）。
 - **批量**：全部智能合并（逐条跑 §3.4 管线，失败的留列表）。
-- 前端触点：`fns_sync/commands.rs` 暴露 `fns_conflict_list / fns_conflict_resolve / fns_conflict_dismiss` IPC；`flowix-web/platform/tauri/client/fns.ts` 封装。
+- 前端触点：`fns_sync/commands.rs` 暴露 `fns_conflict_list / fns_conflict_resolve / fns_conflict_dismiss` IPC；`flownote-web/platform/tauri/client/fns.ts` 封装。
 
 ### 3.7 存量 `.conflict.` 文件
 
@@ -197,7 +197,7 @@ resolve 时**重读本地文件**（挂起期间用户可能又编辑过，以�
 
 | PR | 内容 | 依赖 |
 |---|---|---|
-| PR1 ✅ | `flowix-fns`：`is_conflict_resolved` 参数化 + `SyncState.pending_conflicts` + `.flowix/conflicts/` 存储 + engine 状态机（skip/快照排除/自愈/530/自动解决）+ 单测 | — |
+| PR1 ✅ | `flownote-fns`：`is_conflict_resolved` 参数化 + `SyncState.pending_conflicts` + `.flownote/conflicts/` 存储 + engine 状态机（skip/快照排除/自愈/530/自动解决）+ 单测 | — |
 | PR2 ✅ | 桌面层：IPC 命令（list/resolve/dismiss）+ 同步面板冲突中心（keepLocal/keepRemote/merge/忽略）+ 同步结果 toast 计数 | PR1 |
 | PR3 ✅ | 策略切 `manualMerge`（config 文件可配，默认 manual，不进 UI）+ 存量副本按命名模式列出与一键清理 | PR1 |
 | PR4（可选，另一仓库） | 服务端 §6 增强 | — |
@@ -215,7 +215,7 @@ resolve 时**重读本地文件**（挂起期间用户可能又编辑过，以�
 |---|---|
 | S0 冒烟：桌面建笔记 → 服务端 → 平板 | ✅ 三端字节一致 |
 | S0' 顺序编辑（无意中串行化的双端修改） | ✅ 干净 fast-forward，无冲突 |
-| S2 同段真冲突（平板 force-stop 离线编辑，桌面先推） | ✅ 530 → pending 落盘（sync-state + `.flowix/conflicts/` 记录，server/base 内容正确）→ 平板 UI 冲突中心出现条目（mergeable 正确显示）→ 智能合并按设计拒绝（真冲突）→ 用本地 resolved 推送 → 服务端接受 → 桌面实时收敛 |
+| S2 同段真冲突（平板 force-stop 离线编辑，桌面先推） | ✅ 530 → pending 落盘（sync-state + `.flownote/conflicts/` 记录，server/base 内容正确）→ 平板 UI 冲突中心出现条目（mergeable 正确显示）→ 智能合并按设计拒绝（真冲突）→ 用本地 resolved 推送 → 服务端接受 → 桌面实时收敛 |
 | S1' 不同段真冲突（期望自动合并） | ⚠️ 530 正确挂起，但**自动合并被退化 base 挡住**：logcat `reason="no independent base available"`——对端 keepLocal resolved 推送仅 60s 前，服务端历史快照未落（20-30s 延迟），530 的 baseContent 退化为服务端当前内容，客户端守卫正确拒绝（否则丢一边）→ 用云端解决收敛 |
 | S4 副本风暴检查 | ✅ 全程多次真 530，服务端**零** `.conflict.` 副本 |
 | S5 删除传播 | ✅ 桌面删除 → tombstone → 平板文件消失 |

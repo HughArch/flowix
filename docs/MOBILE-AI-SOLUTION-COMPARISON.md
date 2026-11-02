@@ -4,17 +4,17 @@
 >
 > 前置调研：`docs/MOBILE-AI-FNS-FEASIBILITY.md`（FNS-first 的可行性分析）
 >
-> **结论更新**：发现 `flowix-cli` 的 memo 操作层后，移动端 v1 推荐 **方案 3（本地简易 Agent + 复用应用自身的 memo 操作层）**；FNS-first 保留为远端/云端 Agent 的后端方案。
+> **结论更新**：发现 `flownote-cli` 的 memo 操作层后，移动端 v1 推荐 **方案 3（本地简易 Agent + 复用应用自身的 memo 操作层）**；FNS-first 保留为远端/云端 Agent 的后端方案。
 
 ## 0. 结论先行
 
 | 方案 | 判断 | 一句话理由 |
 |---|---|---|
 | 1. 移动端完整 Agent + 自建笔记 CRUD | ❌ 不推荐 | 等于方案 3 重新实现一遍已有的 memo 操作层，工作量大且语义容易漂移 |
-| 2. 本地 Agent + FNS MCP 做 CRUD | ⚠️ 备选 | 能跑通，但依赖网络、要重签 `p:mcp` token、丢失 Flowix 富内容语义、REST/MCP 写是 LWW |
-| 3. 本地 Agent + 复用应用自身 memo/CLI 操作层 | ✅ 推荐 | 与桌面 DSH 用的 `mcp__flowix__memo` 同一套语义；本地 CAS、离线可用、富内容原生支持、无需改服务端 |
+| 2. 本地 Agent + FNS MCP 做 CRUD | ⚠️ 备选 | 能跑通，但依赖网络、要重签 `p:mcp` token、丢失 Flownote 富内容语义、REST/MCP 写是 LWW |
+| 3. 本地 Agent + 复用应用自身 memo/CLI 操作层 | ✅ 推荐 | 与桌面 DSH 用的 `mcp__flownote__memo` 同一套语义；本地 CAS、离线可用、富内容原生支持、无需改服务端 |
 
-**关键澄清**：方案 3 不是「在 Android 上 spawn `flowix-cli mcp`」——Tauri mobile 不支持 sidecar，Android targetSdk 29+ 也禁止从 app data 执行二进制。正确做法是把 `flowix-cli` 里那套 **transport-neutral 的 memo 操作层抽成库**，注入 App 自己的 `MemoFile`，在进程内调用。MCP/CLI 进程边界保留给桌面和外部 Agent。
+**关键澄清**：方案 3 不是「在 Android 上 spawn `flownote-cli mcp`」——Tauri mobile 不支持 sidecar，Android targetSdk 29+ 也禁止从 app data 执行二进制。正确做法是把 `flownote-cli` 里那套 **transport-neutral 的 memo 操作层抽成库**，注入 App 自己的 `MemoFile`，在进程内调用。MCP/CLI 进程边界保留给桌面和外部 Agent。
 
 ---
 
@@ -22,16 +22,16 @@
 
 | 接口 | 形态 | 谁在用 | 移动端可用性 |
 |---|---|---|---|
-| `flowix-cli` 子命令 | 独立进程 / sidecar | 桌面用户、外部 Agent | ❌ 不能 spawn |
-| `flowix-cli mcp` | stdio JSON-RPC，单工具 `memo` | 桌面 DSH（`dsh-flowix-memory`） | ❌ 不能 spawn；✅ 代码可复用 |
+| `flownote-cli` 子命令 | 独立进程 / sidecar | 桌面用户、外部 Agent | ❌ 不能 spawn |
+| `flownote-cli mcp` | stdio JSON-RPC，单工具 `memo` | 桌面 DSH（`dsh-flownote-memory`） | ❌ 不能 spawn；✅ 代码可复用 |
 | `NoteService` + `MemoFile` | Rust 库 | CLI、桌面 Tauri 命令 | ✅ 已是 AppState 的一部分 |
 | FNS REST / MCP | HTTP / WS，服务端 | 桌面同步、远端 Agent | ✅ 可用，但语义是 raw Markdown |
 
 其中最重要的是第二行和第三行：
 
-- `flowix-cli/src/operation.rs` 的模块注释写的是 **“Transport-neutral Flowix operations shared by CLI and MCP adapters”**——它本来就是为复用设计的。
-- `operation.rs` 覆盖：`list / show / search / create / edit / write / delete`，以及 Flowix 特有的 `callout / toggle / columns / collection / artifact`。
-- `flowix-cli/src/mcp.rs` 把这套操作包装成一个 `memo` 工具，schema 在 `dsh-flowix-memory/memo-tool-schema.json`。
+- `flownote-cli/src/operation.rs` 的模块注释写的是 **“Transport-neutral Flownote operations shared by CLI and MCP adapters”**——它本来就是为复用设计的。
+- `operation.rs` 覆盖：`list / show / search / create / edit / write / delete`，以及 Flownote 特有的 `callout / toggle / columns / collection / artifact`。
+- `flownote-cli/src/mcp.rs` 把这套操作包装成一个 `memo` 工具，schema 在 `dsh-flownote-memory/memo-tool-schema.json`。
 - 底层 `NoteService::save` / `delete_checked` / `edit` 都带 **expected content（CAS）**：磁盘内容变了就返回 `Conflict`，不会静默覆盖。
 
 这是方案 3 的地基。
@@ -42,8 +42,8 @@
 
 桌面 AI 的实际形态是外部 CLI Agent：
 
-- Codex / Claude Code / Pi：工作区文件系统 + `AGENTS.md`（`commands/agent/flowix_instructions.rs` 写入 Flowix CLI 用法）；
-- DSH：除了工作区，还通过 `dsh-flowix-memory` 注册 `flowix-cli mcp`，拿到 `mcp__flowix__memo` 工具。
+- Codex / Claude Code / Pi：工作区文件系统 + `AGENTS.md`（`commands/agent/flownote_instructions.rs` 写入 Flownote CLI 用法）；
+- DSH：除了工作区，还通过 `dsh-flownote-memory` 注册 `flownote-cli mcp`，拿到 `mcp__flownote__memo` 工具。
 
 移动端的问题是：
 
@@ -90,9 +90,9 @@
 **缺点（对移动端 v1 而言）**
 
 1. **网络强依赖**：AI 的每一次读/写都要一次 HTTP；FNS 不可达时笔记操作完全不可用。LLM 本身虽然也要网络，但本地笔记操作没有必要再依赖第二跳。
-2. **token scope 不匹配**：Flowix 接入文档要求 `p:rest,ws c:flowix f:*`；MCP 需要 `p:mcp`，现有 token 直接调 MCP 会被 `VerifyPermissions` 拒绝，需要用户重新签发/轮换。
+2. **token scope 不匹配**：Flownote 接入文档要求 `p:rest,ws c:flownote f:*`；MCP 需要 `p:mcp`，现有 token 直接调 MCP 会被 `VerifyPermissions` 拒绝，需要用户重新签发/轮换。
 3. **需要实现 MCP 客户端**：项目现在只有「给外部 Agent 写 MCP 配置」的能力（`notebook_agents.rs`、`pi/config.rs`），没有 MCP client + session/transport 实现。这是一个独立的新子系统。
-4. **丢失 Flowix 富内容语义**：FNS 只存 raw Markdown。AI 对 callout/toggle/columns/collection 的结构化操作没有对应工具；用全量 write 容易破坏这些结构。移动端用户恰恰最可能在手机上让 AI 改这些内容。
+4. **丢失 Flownote 富内容语义**：FNS 只存 raw Markdown。AI 对 callout/toggle/columns/collection 的结构化操作没有对应工具；用全量 write 容易破坏这些结构。移动端用户恰恰最可能在手机上让 AI 改这些内容。
 5. **写一致性更弱**：REST/MCP 写是 last-write-wins（`handler_note.go:230-263`、`note_tools.go:142`），没有本地 `NoteService` 的 expected-content CAS。并发编辑只能靠本地 push 的 530 兜底，已经同步的版本可能被覆盖。
 6. **回写 UI 有缺口**：同步写入会标记 self-write，watcher 不发光 UI 事件；需要额外补一套 applied-change 事件（见 FNS 调研文档 §2.4）。
 7. **延迟更高**：写服务端 → 广播 → 500ms 防抖 → 增量同步 → 落盘，通常 1s+；本地写是毫秒级。
@@ -105,7 +105,7 @@
 
 **做法**：
 
-1. 把 `flowix-cli` 的 `operation.rs` / `path_store.rs` / 富内容 store 抽成可注入的库（或直接公开这些模块）；
+1. 把 `flownote-cli` 的 `operation.rs` / `path_store.rs` / 富内容 store 抽成可注入的库（或直接公开这些模块）；
 2. 把 `store::open()` 换成注入 App 的 `&MemoFile`（当前只有 6 处 `store::open()`，改造面可控）；
 3. 移动端内置 Agent 的工具调用直接落到这套操作层；
 4. 本地写入照常被 watcher 看到 → UI 刷新 + FNS 同步推送；
@@ -115,7 +115,7 @@
 
 | 维度 | 说明 |
 |---|---|
-| 与桌面一致 | 和桌面 DSH 的 `mcp__flowix__memo` 是同一套 `operation.rs` 语义，不是"类似" |
+| 与桌面一致 | 和桌面 DSH 的 `mcp__flownote__memo` 是同一套 `operation.rs` 语义，不是"类似" |
 | 富内容 | callout / toggle / columns / collection / artifact 全部原生支持 |
 | 冲突安全 | `NoteService::save` / `delete_checked` / `edit` 自带 expected-content CAS；比 REST/MCP 的 LWW 强 |
 | 离线 | 笔记操作完全本地；LLM 需要网络，但笔记读写不受 FNS 影响 |
@@ -131,9 +131,9 @@
 1. **共享 `MemoFile`，不要开第二个实例。**
    `MemoFile` 内部有进程内 `Mutex` 和 `index_cache`；同进程两个实例会绕过互斥、缓存也可能分叉。必须把 `Arc<RwLock<MemoFile>>` 注入操作层，而不是让操作层再 `MemoFile::new()`。
 2. **操作层的路径依赖要解耦。**
-   `flowix-cli/src/paths.rs` 依赖 `dirs::home_dir()`，Android 上为 `None`。注入 `MemoFile` 后，操作层不再需要解析 home；CLI 二进制仍保留原逻辑。
+   `flownote-cli/src/paths.rs` 依赖 `dirs::home_dir()`，Android 上为 `None`。注入 `MemoFile` 后，操作层不再需要解析 home；CLI 二进制仍保留原逻辑。
 3. **打开中的文档要刷新。**
-   本地写入会触发 watcher 的 `flowix:path-note-changed`，列表会刷新；但打开的编辑器 buffer 目前不会自动重载（和桌面外部 CLI 编辑的现状一致）。需要加一个小订阅：干净 buffer 读盘刷新，脏 buffer 保留并在保存时走 CAS 冲突。
+   本地写入会触发 watcher 的 `flownote:path-note-changed`，列表会刷新；但打开的编辑器 buffer 目前不会自动重载（和桌面外部 CLI 编辑的现状一致）。需要加一个小订阅：干净 buffer 读盘刷新，脏 buffer 保留并在保存时走 CAS 冲突。
 
 **结论**：推荐。它不是"重新做一个 Agent"，而是"把桌面已经验证过的工具层接到移动端内置 Agent 上"。
 
@@ -148,7 +148,7 @@
 | 维度 | 方案 1 自建 CRUD | 方案 2 FNS MCP | 方案 3 复用 memo 层 |
 |---|---|---|---|
 | 笔记 CRUD 完整度 | ✅（但重写） | ✅ | ✅ |
-| Flowix 富内容（callout/toggle/columns/collection） | ⚠️ 需重写 | ❌ 不支持 | ✅ 原生 |
+| Flownote 富内容（callout/toggle/columns/collection） | ⚠️ 需重写 | ❌ 不支持 | ✅ 原生 |
 | 冲突安全 | ⚠️ 需自建 | ❌ LWW | ✅ 自带 CAS |
 | 离线可用 | ✅ | ❌ | ✅ |
 | 写入→UI 延迟 | ✅ 毫秒 | ❌ ~1s+（需补事件） | ✅ 毫秒（watcher 已有） |
@@ -170,14 +170,14 @@
 │  移动端 AI 面板（复用会话壳，builtin agent）                   │
 │        │                                                      │
 │        ▼                                                      │
-│  内置 ReAct Agent（恢复 agent_flowix 的 loop / provider /     │
+│  内置 ReAct Agent（恢复 agent_flownote 的 loop / provider /     │
 │  stream / persistence；工具裁剪为 memo）                       │
 │        │  tool calls                                          │
 │        ▼                                                      │
 │  memo 工具适配层（note_list/search/read/create/edit/...）      │
 │        │                                                      │
 │        ▼                                                      │
-│  flowix-memo-ops（从 flowix-cli 抽出的 transport-neutral 层）  │
+│  flownote-memo-ops（从 flownote-cli 抽出的 transport-neutral 层）  │
 │        │  注入 &MemoFile                                       │
 │        ▼                                                      │
 │  NoteService / MemoFile（本地文件 + 索引 + CAS）               │
@@ -205,7 +205,7 @@
   │       → 若磁盘已被用户改过：返回 Conflict，LLM 重新读取后再试
   │
   ├─ 5. MemoFile 写盘 + 索引更新
-  │       → watcher 发 flowix:path-note-changed（不是 self-write）
+  │       → watcher 发 flownote:path-note-changed（不是 self-write）
   │       → 列表刷新；打开中的干净文档 reload
   │       → watcher 调度 FNS 同步（本地 → 服务端 → 其他设备）
   │
@@ -233,7 +233,7 @@
 
 **工具作用域**：
 
-- 默认绑定当前笔记本；地址用 `<notebookId>::<relativePath>` 或当前笔记本内的相对路径，拒绝 `..`、绝对路径、`.flowix/`、隐藏目录；
+- 默认绑定当前笔记本；地址用 `<notebookId>::<relativePath>` 或当前笔记本内的相对路径，拒绝 `..`、绝对路径、`.flownote/`、隐藏目录；
 - 单次工具返回正文有大小上限（超出截断并提示分页/搜索）；
 - 单轮最大工具循环数（复用旧 Agent 的 token 预算/卡死熔断）；
 - 删除/覆盖默认需要用户确认，可在设置里放开"AI 自动写入"。
@@ -244,20 +244,20 @@
 
 ### P0 — 打通工具层（不接 LLM）
 
-1. 抽出 `flowix-memo-ops`（或把 `operation` 模块公开）：
+1. 抽出 `flownote-memo-ops`（或把 `operation` 模块公开）：
    - `MemoOperation` + `execute(&MemoFile, op)`；
    - 把 6 处 `store::open()` 改成注入 `&MemoFile`；
    - CLI 的 `mcp.rs` 改为持有自己的 `MemoFile` 后调用同一层。
-2. 在 `flowix-desktop` 加一个调试 IPC / 单测：用 AppState 的 `MemoFile` 跑 `list → show → create → edit → delete`。
+2. 在 `flownote-desktop` 加一个调试 IPC / 单测：用 AppState 的 `MemoFile` 跑 `list → show → create → edit → delete`。
 3. 验证：
-   - 写入后 watcher 发 `flowix:path-note-changed`，列表刷新；
+   - 写入后 watcher 发 `flownote:path-note-changed`，列表刷新；
    - 打开中的干净文档能否 reload（现状大概率不能，需要 P1 补）；
    - FNS 绑定存在时，AI 写入是否被 watcher 调度同步；
    - 并发编辑时 `edit` 是否返回 Conflict。
 
 ### P1 — 移动端 AI MVP
 
-1. 恢复内置 Agent 核心（从 `62301a4a^:app/flowix-desktop/src/agent_flowix` 选择性恢复）：
+1. 恢复内置 Agent 核心（从 `62301a4a^:app/flownote-desktop/src/agent_flownote` 选择性恢复）：
    - provider / stream / wire / persistence / context / state / factory；
    - 加回 `rllm = "1.1"`；
    - 丢弃 filesystem / shell / web_search / sub_agent 工具。
@@ -267,11 +267,11 @@
    - provider/model/key 配置（复用 `AiModelConfig`，key 进 SecretStore）；
    - 工具作用域（当前笔记本、路径校验、大小/循环上限、删除确认）。
 4. 前端：
-   - 恢复 `flowix` builtin agent 类型（`types/agent.ts`、`lib/agent-types.ts`，图标 `assets/flowix-agent.svg` 仍在）；
+   - 恢复 `flownote` builtin agent 类型（`types/agent.ts`、`lib/agent-types.ts`，图标 `assets/flownote-agent.svg` 仍在）；
    - 移动端只展示这个 builtin agent，外部 CLI agent 继续隐藏；
    - 重新放开创建菜单/会话入口/slash menu 的 AI 项（仅 builtin）；
    - 对话 UI 复用现有会话壳；工具调用展示复用 tool-display；
-   - 打开文档刷新：订阅 `flowix:path-note-changed`，干净 buffer reload，脏 buffer 保留。
+   - 打开文档刷新：订阅 `flownote:path-note-changed`，干净 buffer reload，脏 buffer 保留。
 5. 验证：
    - 手机上一轮对话完成"搜索 → 读 → 精确编辑 → 新建 → 删除"；
    - 桌面看到同步结果；
@@ -300,7 +300,7 @@
 | 小模型工具调用不稳 | 动作名/参数错 | 细粒度工具 + 严格 schema + 错误回传让模型重试 |
 | Provider key 安全 | 泄露 | SecretStore / 数据库加密，UI 不回显 |
 | 与 FNS 同步耦合 | AI 写入触发同步风暴 | watcher 已有防抖；批量操作按 notebook 合并 |
-| 语义分叉 | 桌面/移动行为不一致 | 统一走同一 `flowix-memo-ops`，CLI/MCP/移动共用 |
+| 语义分叉 | 桌面/移动行为不一致 | 统一走同一 `flownote-memo-ops`，CLI/MCP/移动共用 |
 
 ---
 
@@ -340,7 +340,7 @@ trait NoteToolBackend {
 
 | 能力 | v1 | 实现方式 |
 |---|---|---|
-| 笔记增删改查 | ✅ | `flowix-memo-ops` + `NoteService`（CAS） |
+| 笔记增删改查 | ✅ | `flownote-memo-ops` + `NoteService`（CAS） |
 | 当前笔记 / 当前标签上下文 | ✅ | 已有首条消息 context block（前 500 字 + 任务标签） |
 | `@笔记` / `@文件夹` 引用 | ✅ | 已有 composer token；Agent 侧解析引用并 `note_read` |
 | 图片 / 文件附件 | ✅（取决于模型） | `image_paths` / `message_attachments` 已存在；视觉能力看 provider |
@@ -364,16 +364,16 @@ trait NoteToolBackend {
 「引用」在现有前端已经有两层：
 
 1. **隐式上下文**：首条消息会注入当前笔记前 500 字和当前任务标签（`features/agent/store/context-block.ts`）；
-2. **显式引用**：composer 支持 `@笔记` 和 `@文件夹`，序列化成 Markdown 链接（`flowix://open?...` / `flowix://folder/...`），附件也有独立 token。
+2. **显式引用**：composer 支持 `@笔记` 和 `@文件夹`，序列化成 Markdown 链接（`flownote://open?...` / `flownote://folder/...`），附件也有独立 token。
 
 内置 Agent 需要补的是**解析**，不是 UI：
 
-- 收到用户消息后，扫描 `flowix://open?notebookId=...&relativePath=...` / `flowix://folder/...`，把引用解析成当前笔记本下的路径；
+- 收到用户消息后，扫描 `flownote://open?notebookId=...&relativePath=...` / `flownote://folder/...`，把引用解析成当前笔记本下的路径；
 - 对笔记引用调用 `note_read`（或预先注入正文，按 token 预算截断）；
 - 对文件夹引用调用 `note_list` 或 `note_search`；
 - 回答里用 `<notebookId>::<relativePath>` 或 Markdown 链接回引，前端已有 note-link 渲染。
 
-**边界**：本地 `flowix-core` 目前没有 backlinks/outlinks 索引（grep 无相关实现）；FNS 服务端有。如果「引用文档」包含反链查询，v1.1 需要本地扫描全部 Markdown 或加一个 FNS 工具。
+**边界**：本地 `flownote-core` 目前没有 backlinks/outlinks 索引（grep 无相关实现）；FNS 服务端有。如果「引用文档」包含反链查询，v1.1 需要本地扫描全部 Markdown 或加一个 FNS 工具。
 
 ### 9.2 联网搜索
 
@@ -381,7 +381,7 @@ trait NoteToolBackend {
 
 **A. 工具式搜索（推荐 v1）**
 
-- 旧内置 Agent 里已有 `web_search`（`agent_flowix/tools/web_search.rs`，DuckDuckGo HTML，无 API key），返回 `title/url/snippet`；
+- 旧内置 Agent 里已有 `web_search`（`agent_flownote/tools/web_search.rs`，DuckDuckGo HTML，无 API key），返回 `title/url/snippet`；
 - 任何 LLM 都能用，结果可控、可引用；
 - 生产环境建议换成结构化搜索 API：DeepSeek 的 `/v1/tools/search`、Brave / Tavily / Serper 等（用户配置 key）；DuckDuckGo 只做无 key 兜底，并加超时/降级/缓存。
 - 搜索结果是普通工具结果，前端只要把 `url/title/snippet` 渲染出来即可形成引用；不需要模型支持 citations 字段。
@@ -411,7 +411,7 @@ trait NoteToolBackend {
 
 ## 10. 开放问题
 
-1. **Agent 运行时**：恢复旧 `agent_flowix`，还是用 `rllm` 重写一个更小的循环？推荐先恢复、再裁剪。
+1. **Agent 运行时**：恢复旧 `agent_flownote`，还是用 `rllm` 重写一个更小的循环？推荐先恢复、再裁剪。
 2. **工具粒度**：一个 `memo` 工具（与桌面完全一致）还是拆成 8 个细粒度工具？推荐拆，移动端模型更稳。
 3. **富内容 v1 是否要**：如果移动端主要用来记文本，callout/toggle/columns 可以放 v1.1；但底层操作层已经支持，放开成本低。
 4. **删除确认**：默认每次确认，还是提供"自动写入"开关？
@@ -424,14 +424,14 @@ trait NoteToolBackend {
 
 | 内容 | 位置 |
 |---|---|
-| transport-neutral 操作层 | `app/flowix-cli/src/operation.rs`（模块注释即说明用途） |
-| 路径读写 / CAS | `app/flowix-cli/src/path_store.rs` |
-| MCP stdio 适配 | `app/flowix-cli/src/mcp.rs`、`dsh-flowix-memory/memo-tool-schema.json` |
-| 本地 NoteService / CAS | `app/flowix-core/src/service.rs`（`NoteSaveOutcome::Conflict`、`delete_checked`） |
-| MemoFile 锁与索引 | `app/flowix-core/src/memo_file/mod.rs`、`operation_locks.rs` |
-| 桌面 DSH 的 memo 工具 | `dsh-flowix-memory/README.md`、`launcher.mjs` |
-| 桌面 Agent 指令 | `app/flowix-desktop/src/commands/agent/flowix_instructions.rs` |
-| 旧内置 Agent（可恢复） | `git show 62301a4a^:app/flowix-desktop/src/agent_flowix` |
+| transport-neutral 操作层 | `app/flownote-cli/src/operation.rs`（模块注释即说明用途） |
+| 路径读写 / CAS | `app/flownote-cli/src/path_store.rs` |
+| MCP stdio 适配 | `app/flownote-cli/src/mcp.rs`、`dsh-flownote-memory/memo-tool-schema.json` |
+| 本地 NoteService / CAS | `app/flownote-core/src/service.rs`（`NoteSaveOutcome::Conflict`、`delete_checked`） |
+| MemoFile 锁与索引 | `app/flownote-core/src/memo_file/mod.rs`、`operation_locks.rs` |
+| 桌面 DSH 的 memo 工具 | `dsh-flownote-memory/README.md`、`launcher.mjs` |
+| 桌面 Agent 指令 | `app/flownote-desktop/src/commands/agent/flownote_instructions.rs` |
+| 旧内置 Agent（可恢复） | `git show 62301a4a^:app/flownote-desktop/src/agent_flownote` |
 | 移动端 AI 隐藏 | commit `f82d3b3f` |
-| FNS 同步写入自写抑制 | `app/flowix-desktop/src/fns_sync/store.rs`、`watcher/manager.rs` |
-| 打开文档 reload 协调 | `app/flowix-web/features/document/public/sync-coordination.ts` |
+| FNS 同步写入自写抑制 | `app/flownote-desktop/src/fns_sync/store.rs`、`watcher/manager.rs` |
+| 打开文档 reload 协调 | `app/flownote-web/features/document/public/sync-coordination.ts` |

@@ -8,7 +8,7 @@
 附件节点把**设备绝对路径**当作 `storageKey` 写入 markdown：
 
 ```markdown
-![133864360343560357.jpg](asset://localhost/D%3A%5Cflowix%5Cattachments%5C133864360343560357.jpg)
+![133864360343560357.jpg](asset://localhost/D%3A%5Cflownote%5Cattachments%5C133864360343560357.jpg)
 ```
 
 FNS 按原样同步内容，附件文件本身则按**笔记本相对路径**（`attachments/<name>`）到达另一端。移动端拿到桌面路径后 `asset://localhost/D%3A...` 无法解析，图片全部不可访问。

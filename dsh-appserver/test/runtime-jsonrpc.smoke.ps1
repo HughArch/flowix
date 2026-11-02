@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
-$node = 'C:\Users\Administrator\AppData\Roaming\Flowix\dsh\versions\1.0.2\node\node.exe'
-$bin = 'C:\Users\Administrator\AppData\Roaming\Flowix\dsh\versions\1.0.2\runtime\node_modules\@deepseek-ai\dsh-sdk-jsonrpc-demo\lib\packaged-bin.js'
+$node = 'C:\Users\Administrator\AppData\Roaming\Flownote\dsh\versions\1.0.2\node\node.exe'
+$bin = 'C:\Users\Administrator\AppData\Roaming\Flownote\dsh\versions\1.0.2\runtime\node_modules\@deepseek-ai\dsh-sdk-jsonrpc-demo\lib\packaged-bin.js'
 $configTemplate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\dsh-runtime-test\cordis-minimal.yml'))
 $runRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('dsh-appserver-smoke-' + [Guid]::NewGuid().ToString('N'))
 $sessionRoot = Join-Path $runRoot 'sessions'

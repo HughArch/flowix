@@ -17,7 +17,7 @@ export function createDshRuntimeMetadata({
 }) {
   const metadata = {
     schemaVersion: DSH_RUNTIME_SCHEMA_VERSION,
-    product: 'flowix-dsh',
+    product: 'flownote-dsh',
     version,
     protocolVersion: DSH_PROTOCOL_VERSION,
     target,

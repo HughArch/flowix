@@ -49,4 +49,4 @@ Review 后续已修复认证重试串用身份、旧观察覆盖 revision、上�
 
 ## 恢复记录
 
-前端 localStorage 键为 `flowix:attachment-upload-recovery:v1`，保存最近最多 200 条路径、笔记 ID 与时间信息。后端新增笔记本内 `.flowix/attachment-imports` 事前记录及查询接口，两者都只是恢复线索，不授权自动删除附件。文件本身仍保留在对应笔记本的 attachments 目录；尚无恢复管理界面。
+前端 localStorage 键为 `flownote:attachment-upload-recovery:v1`，保存最近最多 200 条路径、笔记 ID 与时间信息。后端新增笔记本内 `.flownote/attachment-imports` 事前记录及查询接口，两者都只是恢复线索，不授权自动删除附件。文件本身仍保留在对应笔记本的 attachments 目录；尚无恢复管理界面。

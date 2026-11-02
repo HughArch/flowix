@@ -1,4 +1,4 @@
-format: flowix.collection
+format: flownote.collection
 schema_version: 2
 collection:
   id: col_cccccccccccccccccccccccccccccccc

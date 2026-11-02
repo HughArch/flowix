@@ -156,7 +156,7 @@ export class DshAppServer {
             mcp: { statusList: false, refresh: false, configReload: false, oauthLogin: false, toolCall: false, resourceRead: false },
             models: { catalog: true, discover: true, configure: true, delete: true },
             credentials: { read: true, write: true },
-            flowix: { jobs: true, usage: true, plugins: true, profile: true },
+            flownote: { jobs: true, usage: true, plugins: true, profile: true },
             approvals: { request: true, policy: ['ask', 'never'], decisions: ['accept', 'decline', 'cancel'] },
             goals: { read: true, write: true, clear: true, tokenBudget: false },
             subagents: { spawn: false, list: false, send: false, resume: false, interrupt: false, wait: false, close: false },

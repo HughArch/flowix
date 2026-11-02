@@ -5,7 +5,7 @@ import { delimiter, join, resolve } from 'node:path'
 
 const repo = resolve(import.meta.dirname, '..')
 const app = resolve(repo, 'app')
-const binaries = resolve(app, 'flowix-desktop/binaries')
+const binaries = resolve(app, 'flownote-desktop/binaries')
 const debug = process.argv.includes('--debug')
 const macos = process.argv.includes('--macos')
 const targetArg = process.argv.find(value => value.startsWith('--target='))?.slice(9)
@@ -57,7 +57,7 @@ for (const target of targets) {
 mkdirSync(binaries, { recursive: true })
 for (const target of targets) {
   const explicitTarget = macos || targetArg !== undefined
-  const args = ['build', '--manifest-path', resolve(app, 'Cargo.toml'), '--bin', 'flowix-cli']
+  const args = ['build', '--manifest-path', resolve(app, 'Cargo.toml'), '--bin', 'flownote-cli']
   if (explicitTarget) args.push('--target', target)
   if (!debug) args.push('--release')
   run(executable('cargo'), args)
@@ -65,17 +65,17 @@ for (const target of targets) {
   const profile = debug ? 'debug' : 'release'
   const extension = target.includes('windows') ? '.exe' : ''
   const source = explicitTarget
-    ? resolve(cargoTarget, target, profile, `flowix-cli${extension}`)
-    : resolve(cargoTarget, profile, `flowix-cli${extension}`)
+    ? resolve(cargoTarget, target, profile, `flownote-cli${extension}`)
+    : resolve(cargoTarget, profile, `flownote-cli${extension}`)
   if (!existsSync(source)) throw new Error(`CLI build output is missing: ${source}`)
-  const staged = resolve(binaries, `flowix-cli-${target}${extension}`)
+  const staged = resolve(binaries, `flownote-cli-${target}${extension}`)
   rmSync(staged, { force: true })
   copyFileSync(source, staged)
   if (!target.includes('windows')) chmodSync(staged, 0o755)
   process.stdout.write(`staged ${staged}\n`)
 
   if (!explicitTarget) {
-    const development = resolve(binaries, `flowix-cli${extension}`)
+    const development = resolve(binaries, `flownote-cli${extension}`)
     rmSync(development, { force: true })
     copyFileSync(staged, development)
     if (!target.includes('windows')) chmodSync(development, 0o755)

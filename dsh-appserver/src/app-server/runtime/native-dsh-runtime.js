@@ -4,8 +4,8 @@ import { itemFromEvent, projectTurns, selectItemsView } from '../projections/tur
 import { projectHistoryMessages } from '../projections/transcript-projector.js'
 import { projectNotifications } from '../projections/notification-projector.js'
 
-// Native adapter for Flowix's bundled DeepSeek Harness runtime.
-// It deliberately imports no Flowix bridge package. The host supplies a Cordis ctx.
+// Native adapter for Flownote's bundled DeepSeek Harness runtime.
+// It deliberately imports no Flownote bridge package. The host supplies a Cordis ctx.
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -121,7 +121,7 @@ function isStandaloneTimelineEvent(event) {
  * adapter route. Dormant built-in routes therefore need the same pi-ai model
  * catalog that dsh-llm-pi-ai uses internally. Resolve it from the managed
  * runtime executable rather than assuming that the profile copy has its own
- * node_modules tree (the profile intentionally contains only Flowix bundles).
+ * node_modules tree (the profile intentionally contains only Flownote bundles).
  */
 async function loadBuiltinPiAiCatalog() {
   const candidates = []
@@ -226,7 +226,7 @@ export class NativeDshAdapter {
         const payload = args.find(value => value && typeof value === 'object') || {}
         const change = normalizeConfigChange(payload)
         this.emit({ jsonrpc: '2.0', method: 'config/changed', params: change })
-        if (change.namespace === 'flowix-appserver' && change.changedPaths?.some(path => path === 'skills' || path.startsWith('skills.'))) {
+        if (change.namespace === 'flownote-appserver' && change.changedPaths?.some(path => path === 'skills' || path.startsWith('skills.'))) {
           const revision = this.skillCatalog.invalidate()
           this.emit({ jsonrpc: '2.0', method: 'skills/changed', params: { revision, change } })
         }
@@ -250,7 +250,7 @@ export class NativeDshAdapter {
     })
     if (typeof mcpDisposer === 'function') this.disposers.push(mcpDisposer)
     // `session-log-download` is a Web bundle contribution and therefore is
-    // not present in Flowix's native/stdio composition. Keep the same DSH
+    // not present in Flownote's native/stdio composition. Keep the same DSH
     // command name available in the native host; the response is enriched by
     // thread/command with the actual JSON export below.
     const commands = ctx.commands || ctx.get?.('commands')
@@ -333,7 +333,7 @@ export class NativeDshAdapter {
       // durable assistant/message event. Keep the turn/step mapping alive
       // until that event arrives; older hosts do not include the committed
       // event sequence in the stream end frame, so deleting it here makes the
-      // final snapshot look like a second assistant item to Flowix.
+      // final snapshot look like a second assistant item to Flownote.
       //
       // The mapping is removed by assistantStreamItemIdForEvent once the
       // durable snapshot reconciles it, and the turn/end cleanup below covers
@@ -819,7 +819,7 @@ export class NativeDshAdapter {
     // future compaction checkpoint while paging older rows.
     const messages = projectHistoryMessages(id, page.events, toolNames, visibleEvents, {
       // The DSH model context still follows its native surface replacement,
-      // while Flowix renders a durable append-only conversation timeline.
+      // while Flownote renders a durable append-only conversation timeline.
       preserveCompactedHistory: true,
     })
     return {
@@ -1204,7 +1204,7 @@ function profilePlugins() {
 }
 
 function disabledPluginKeys() {
-  const path = process.env.FLOWIX_DSH_PLUGIN_SETTINGS_PATH
+  const path = process.env.FLOWNOTE_DSH_PLUGIN_SETTINGS_PATH
   if (!path) return new Set()
   try {
     const settings = JSON.parse(readFileSync(path, 'utf8'))
@@ -1228,7 +1228,7 @@ function presetPlugins() {
 }
 
 function presetRoot() {
-  const configured = process.env.DSH_AGENT_PRESET_ROOT || process.env.FLOWIX_DSH_PRESET_ROOT
+  const configured = process.env.DSH_AGENT_PRESET_ROOT || process.env.FLOWNOTE_DSH_PRESET_ROOT
   if (configured) return configured
   try {
     return join(dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'config', 'agent-presets')

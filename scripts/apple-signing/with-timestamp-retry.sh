@@ -5,7 +5,7 @@
 # service transient failures ("A timestamp was expected but was not found" /
 # "The timestamp service is not available"). Apple's timestamp endpoints
 # (timestamp.apple.com / ts01) are intermittently unreachable; per memory
-# `flowix-release-build-detached-timestamp-retry`, retrying with backoff is
+# `flownote-release-build-detached-timestamp-retry`, retrying with backoff is
 # the supported workaround.
 #
 # Only retries when the wrapped command's exit code + stderr matches one of

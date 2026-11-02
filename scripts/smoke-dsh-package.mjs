@@ -11,8 +11,8 @@ const rootArg = rootFlagIndex >= 0 ? process.argv[rootFlagIndex + 1] : process.a
 if (!rootArg) throw new Error('usage: node smoke-dsh-package.mjs --root <bundle-root>')
 
 const root = resolve(rootArg)
-const smokeTimeoutMs = Number(process.env.FLOWIX_DSH_SMOKE_TIMEOUT_MS) > 0
-  ? Number(process.env.FLOWIX_DSH_SMOKE_TIMEOUT_MS)
+const smokeTimeoutMs = Number(process.env.FLOWNOTE_DSH_SMOKE_TIMEOUT_MS) > 0
+  ? Number(process.env.FLOWNOTE_DSH_SMOKE_TIMEOUT_MS)
   : 120_000
 const metadata = existsSync(resolve(root, 'dsh-runtime.json'))
   ? JSON.parse(await readFile(resolve(root, 'dsh-runtime.json'), 'utf8'))
@@ -22,7 +22,7 @@ if (metadata.runtimeType && metadata.runtimeType !== 'node-bundle') {
 }
 const nodeExecutable = resolve(root, metadata.nodeExecutable ?? 'node/node')
 const entrypoint = resolve(root, metadata.entrypoint ?? 'runtime/node_modules/@deepseek-ai/dsh/lib/bin.js')
-const profile = resolve(root, 'profile/flowix')
+const profile = resolve(root, 'profile/flownote')
 if (!existsSync(nodeExecutable) || !existsSync(entrypoint) || !existsSync(profile)) {
   throw new Error(`DSH package is incomplete: node=${nodeExecutable}, entrypoint=${entrypoint}, profile=${profile}`)
 }
@@ -34,7 +34,7 @@ requireFromRuntime('koffi')
 
 const smokeRoot = resolve(root, `.smoke-home-${randomUUID()}`)
 const home = resolve(smokeRoot, 'dsh-home')
-const profileHome = resolve(home, 'profiles/flowix')
+const profileHome = resolve(home, 'profiles/flownote')
 await mkdir(resolve(home, 'profiles'), { recursive: true })
 await cp(profile, profileHome, { recursive: true })
 await writeFile(resolve(home, 'settings.yaml'), 'llm-pi-ai:\n  providers: {}\n')
@@ -47,7 +47,7 @@ await mkdir(resolve(workspace, '.git'))
 await writeFile(resolve(skillDir, 'SKILL.md'), '---\nname: package-smoke\ndescription: Package skill discovery check\n---\nRead the project instructions.\n')
 
 const stderr = []
-const child = spawn(nodeExecutable, [entrypoint, '--profile', 'flowix'], {
+const child = spawn(nodeExecutable, [entrypoint, '--profile', 'flownote'], {
   cwd: root,
   env: {
     ...process.env,
@@ -55,8 +55,8 @@ const child = spawn(nodeExecutable, [entrypoint, '--profile', 'flowix'], {
     DSH_SETTINGS_PATH: resolve(home, 'settings.yaml'),
     DSH_CREDENTIALS_PATH: resolve(home, '.credentials.yaml'),
     DSH_PROFILE_DIR: profileHome,
-    FLOWIX_DSH_ROOT: root,
-    FLOWIX_DSH_APPSERVER_STDIO: '1',
+    FLOWNOTE_DSH_ROOT: root,
+    FLOWNOTE_DSH_APPSERVER_STDIO: '1',
   },
   stdio: ['pipe', 'pipe', 'pipe'],
   detached: process.platform !== 'win32',
@@ -68,7 +68,7 @@ const lines = lineReader[Symbol.asyncIterator]()
 try {
   const initialized = await request(child, lines, 1, 'initialize', {
     protocolVersion: 1,
-    clientInfo: { name: 'flowix-package-smoke', version: '1' },
+    clientInfo: { name: 'flownote-package-smoke', version: '1' },
     capabilities: {},
   })
   const initializeResult = initialized.result
@@ -77,7 +77,7 @@ try {
   }
 
   const thread = await request(child, lines, 2, 'thread/start', {
-    flowixThreadId: 'flowix-package-smoke',
+    flownoteThreadId: 'flownote-package-smoke',
     cwd: workspace,
     workspacePaths: [],
     provider: 'openai',

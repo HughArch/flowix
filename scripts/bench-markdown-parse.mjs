@@ -22,7 +22,7 @@ import { build } from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
-const frontendRoot = join(repoRoot, 'app/flowix-web');
+const frontendRoot = join(repoRoot, 'app/flownote-web');
 const workDir = join(repoRoot, '.build/bench-markdown-parse');
 
 const args = new Map(

@@ -1,0 +1,106 @@
+import { VideoEmbedMarkdownExtension } from './extensions/video-embed/markdown';
+import { BulletList, OrderedList } from '@tiptap/extension-list';
+import { TaskList } from '@tiptap/extension-task-list';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableHeader } from '@tiptap/extension-table-header';
+import { TableCell } from '@tiptap/extension-table-cell';
+import StarterKit from '@tiptap/starter-kit';
+import { AttachmentMarkdownExtensions } from '@features/editor/extensions/attachment-link/markdown/extensions';
+import { CodeBlockShikiBase } from '@features/editor/extensions/codeblock-shiki/codeblock-shiki-base';
+import { FlownoteHighlight } from '@features/editor/extensions/flownote-text-mark';
+import { MarkdownLinkParserExtension } from '@features/editor/extensions/markdown-link-markdown';
+import { NoteReferenceMarkdownExtension } from '@features/editor/extensions/note-link/note-reference-markdown';
+import { NoteReferenceBlockMarkdownExtension } from '@features/editor/extensions/note-block/note-reference-block-markdown';
+import { FlownoteTable } from '@features/editor/extensions/table/flownote-table';
+import { FrontmatterMarkdownExtension } from '@features/editor/extensions/frontmatter-markdown';
+import { TableReferenceMarkdownExtension } from '@features/multidimensional-table/table-reference-markdown';
+import { MediaLibraryReferenceMarkdownExtension } from '@features/media-library/media-library-reference-markdown';
+import { MarkdownEscape, LegacyAdjacentStrongMarkdown } from './markdown-parser-core-extensions';
+import { MathBlockMarkdownExtension } from '@features/editor/extensions/math-block-markdown';
+import { WebCardMarkdownExtension } from '@features/editor/extensions/web-card-markdown';
+import { MarkdownParagraph, MarkdownHeading, MarkdownListItem, MarkdownTaskItem } from './markdown-parser-common-extensions';
+import { AgentThreadCardMarkdownExtension } from '@features/agent/thread-card/agent-thread-card-markdown-spec';
+// Import the node definitions directly (not the feature barrel): the barrel
+// also re-exports editor NodeViews, whose i18n/store imports must stay out of
+// the worker bundle.
+import { ColumnsNode, ColumnNode } from '@features/editor/extensions/columns/columns';
+import { CalloutNode } from '@features/editor/extensions/callout/callout';
+import { ToggleNode } from '@features/editor/extensions/toggle/toggle';
+import { guardListMarkdownTokenizer } from './markdown-list-tokenizer';
+
+/**
+ * List tokenizers split the remaining document before checking the first line.
+ * Rejecting non-list blocks up front is what keeps parsing linear in block
+ * count; see `markdown-list-tokenizer.ts`.
+ */
+const GuardedOrderedList = guardListMarkdownTokenizer(
+  OrderedList,
+  /^\s*(?:[-+*]|\d{1,9}[.)])\s+/,
+);
+const GuardedTaskList = guardListMarkdownTokenizer(
+  TaskList,
+  /^\s*[-+*]\s+\[[ xX]\]\s+/,
+);
+
+/**
+ * MarkdownManager only consumes Markdown tokenizers and parse handlers. Keep
+ * this registry separate from editor menus, NodeViews, and editing plugins.
+ */
+export function createMarkdownParserExtensions() {
+  return [
+    StarterKit.configure({
+      heading: false,
+      dropcursor: false,
+      gapcursor: false,
+      link: false,
+      codeBlock: false,
+      paragraph: false,
+      listItem: false,
+      // Registered below through guarded variants: the stock tokenizers scan
+      // the whole remaining document on every block.
+      bulletList: false,
+      orderedList: false,
+    }),
+    MarkdownHeading.configure({ levels: [1, 2, 3, 4] }),
+    MarkdownParagraph,
+    MarkdownListItem,
+    BulletList,
+    GuardedOrderedList,
+    GuardedTaskList,
+    MarkdownTaskItem,
+    MarkdownEscape,
+    LegacyAdjacentStrongMarkdown,
+    ...AttachmentMarkdownExtensions,
+    MarkdownLinkParserExtension,
+    CodeBlockShikiBase,
+    MathBlockMarkdownExtension,
+    WebCardMarkdownExtension,
+    VideoEmbedMarkdownExtension,
+    FlownoteTable,
+    // FlownoteTable declares `content: 'tableRow+'`, so the row/cell nodes must
+    // exist here too. Without them the manager cannot build a schema for the
+    // raw-HTML branch (`generateJSON`) and every note containing HTML throws.
+    TableRow,
+    TableHeader,
+    TableCell,
+    TableReferenceMarkdownExtension,
+    MediaLibraryReferenceMarkdownExtension,
+    FlownoteHighlight.configure({ multicolor: true }),
+    FrontmatterMarkdownExtension,
+    NoteReferenceMarkdownExtension,
+    NoteReferenceBlockMarkdownExtension,
+    // Notes that embed an AI thread card used to be rejected by the worker so
+    // the browser parser could keep the card. Registering the markdown-only
+    // spec lets background parsing keep it as a node instead.
+    AgentThreadCardMarkdownExtension,
+    // Columns carry a custom fenced-div tokenizer. The worker registry must
+    // know both container nodes or parsing would drop the structure.
+    ColumnsNode,
+    ColumnNode,
+    // Callouts use the same fenced-div tokenizer family; without this node the
+    // background parser would flatten the structure into paragraphs.
+    CalloutNode,
+    // Toggles use the same fenced-div tokenizer family as columns/callouts.
+    ToggleNode,
+  ];
+}

@@ -1,0 +1,24 @@
+import { describe, expect, it } from 'vitest';
+import { buildNoteOpenLink, buildNoteOpenLinkFromPath } from './path-link';
+
+describe('path deep links', () => {
+  it('encodes notebook, nested path, and heading without an ID', () => {
+    const link = buildNoteOpenLink('My Vault', 'Projects/Plan.md', 'Goals');
+    expect(link).toBe('flownote://open?b=My+Vault&f=Projects%2FPlan.md&heading=Goals');
+    expect(link).not.toContain('memo/');
+  });
+
+  it('distinguishes a literal # in the filename from a heading', () => {
+    expect(buildNoteOpenLink('A', 'Plan#Goals.md')).toBe('flownote://open?b=A&f=Plan%23Goals.md&heading=');
+  });
+
+  it('uses the exact notebook root and refuses ambiguous names', () => {
+    const books = [
+      { name: 'Root', path: 'C:/Notes' },
+      { name: 'Nested', path: 'C:/Notes/Book' },
+    ];
+    expect(buildNoteOpenLinkFromPath('C:/Notes/Book/Plan.md', books)).toBe('flownote://open?b=Nested&f=Plan.md');
+    expect(buildNoteOpenLinkFromPath('c:/notes/book/Plan.md', books)).toBe('flownote://open?b=Nested&f=Plan.md');
+    expect(buildNoteOpenLinkFromPath('C:/Notes/Book/Plan.md', [...books, { name: 'Nested', path: 'D:/Other' }])).toBeNull();
+  });
+});

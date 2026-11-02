@@ -3,13 +3,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const frontendRoot = resolve(__dirname, 'app/flowix-web');
+const frontendRoot = resolve(__dirname, 'app/flownote-web');
 
 export default defineConfig({
   test: {
     environment: 'jsdom',
-    include: ['app/flowix-web/**/*.test.{ts,tsx}'],
-    setupFiles: ['app/flowix-web/vitest.setup.ts'],
+    include: ['app/flownote-web/**/*.test.{ts,tsx}'],
+    setupFiles: ['app/flownote-web/vitest.setup.ts'],
   },
   resolve: {
     alias: {

@@ -5,7 +5,7 @@ import { sessionMethods } from './session.js'
 import { threadMethods } from './thread.js'
 import { turnMethods } from './turn.js'
 import { approvalMethods } from './approval.js'
-import { flowixMethods } from './flowix.js'
+import { flownoteMethods } from './flownote.js'
 import { commandMethods } from './command.js'
 import { goalMethods } from './goal.js'
 import { configMethods } from './config.js'
@@ -21,7 +21,7 @@ export function createMethodRegistry(adapter, notify) {
     ...runtimeMethods(adapter),
     ...sessionMethods(adapter),
     ...approvalMethods(adapter),
-    ...flowixMethods(adapter),
+    ...flownoteMethods(adapter),
     ...commandMethods(adapter),
     ...goalMethods(adapter),
     ...configMethods(adapter),

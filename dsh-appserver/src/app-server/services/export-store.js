@@ -7,7 +7,7 @@ import { ResultTooLargeError } from '../protocol/domain-errors.js'
 export class ExportStore {
   constructor({ inlineBytes = 1024 * 1024, maxBytes = 100 * 1024 * 1024, ttlMs = 15 * 60_000 } = {}) {
     this.inlineBytes = inlineBytes; this.maxBytes = maxBytes; this.ttlMs = ttlMs
-    this.root = join(tmpdir(), 'flowix-dsh-exports'); this.files = new Map()
+    this.root = join(tmpdir(), 'flownote-dsh-exports'); this.files = new Map()
   }
   async create(filename, content) {
     const bytes = Buffer.byteLength(content, 'utf8')

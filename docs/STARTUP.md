@@ -47,10 +47,10 @@
 
 ## 代码入口
 
-- 阶段状态与协调：`app/flowix-desktop/src/app/startup.rs`
-- 原生准备与绘制后服务：`app/flowix-desktop/src/app/bootstrap.rs`
-- 前端工作台启动与目标恢复：`app/flowix-web/app/main-window-startup.ts`
-- 阶段 3 准入和按名去重：`app/flowix-web/lib/startup-stage3.ts`
+- 阶段状态与协调：`app/flownote-desktop/src/app/startup.rs`
+- 原生准备与绘制后服务：`app/flownote-desktop/src/app/bootstrap.rs`
+- 前端工作台启动与目标恢复：`app/flownote-web/app/main-window-startup.ts`
+- 阶段 3 准入和按名去重：`app/flownote-web/lib/startup-stage3.ts`
 - 详细并发、维护和状态交付约定：[`STARTUP-LIFECYCLE.md`](./STARTUP-LIFECYCLE.md)
 
 新增阶段 1 任务应检查成功记录、完成后跳过和失败重试。新增阶段 2 任务应检查依赖顺序、失败重试和重复挂载去重。新增阶段 3 任务应检查准入前不会执行、同名任务不会重复启动，并验证该功能自己的失败和重试策略。

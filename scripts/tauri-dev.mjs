@@ -10,21 +10,21 @@ const tauriEntrypoint = resolve(repoRoot, 'node_modules/@tauri-apps/cli/tauri.js
 const args = process.argv.slice(2)
 const withPi = args.includes('--with-pi')
 const configArgs = args.filter(arg => arg !== '--with-pi')
-const requestedConfig = configArgs[0] ?? 'app/flowix-desktop/tauri.conf.dev.json'
+const requestedConfig = configArgs[0] ?? 'app/flownote-desktop/tauri.conf.dev.json'
 // Tauri replaces (rather than deep-merges) the `app.windows` array, so the
 // generic dev config would drop the frameless window settings that the
 // platform overlay normally supplies. Windows draws its own chrome in React,
 // so route it through the dedicated Windows dev config.
-const config = process.platform === 'win32' && requestedConfig === 'app/flowix-desktop/tauri.conf.dev.json'
-  ? 'app/flowix-desktop/tauri.windows.dev.conf.json'
+const config = process.platform === 'win32' && requestedConfig === 'app/flownote-desktop/tauri.conf.dev.json'
+  ? 'app/flownote-desktop/tauri.windows.dev.conf.json'
   : requestedConfig
-// FLOWIX_VITE_PORT moves the vite dev server (vite.config.ts reads the same
+// FLOWNOTE_VITE_PORT moves the vite dev server (vite.config.ts reads the same
 // variable). The Tauri devUrl must follow, otherwise the webview keeps
 // loading the default 1420. The overlay JSON is passed inline so the
 // untouched config files stay canonical.
-const devPort = Number(process.env.FLOWIX_VITE_PORT) || 1420
+const devPort = Number(process.env.FLOWNOTE_VITE_PORT) || 1420
 if (devPort !== 1420 && (!Number.isInteger(devPort) || devPort < 1 || devPort > 65535)) {
-  throw new Error(`FLOWIX_VITE_PORT=${process.env.FLOWIX_VITE_PORT} is not a valid port`)
+  throw new Error(`FLOWNOTE_VITE_PORT=${process.env.FLOWNOTE_VITE_PORT} is not a valid port`)
 }
 const configArg = devPort === 1420
   ? config
@@ -33,12 +33,12 @@ const configArg = devPort === 1420
       return { ...overlay, build: { ...overlay.build, devUrl: `http://localhost:${devPort}` } }
     })())
 const childEnv = { ...process.env }
-// Pi is shipped by Flowix; do not let a shell override change the runtime.
+// Pi is shipped by Flownote; do not let a shell override change the runtime.
 delete childEnv.PI_CLI_PATH
 childEnv.CARGO_TARGET_DIR ??= resolve(repoRoot, '.build/cargo-target')
 const devMode = config.includes('.dev.')
-if (devMode) childEnv.FLOWIX_DEV_MODE = '1'
-else delete childEnv.FLOWIX_DEV_MODE
+if (devMode) childEnv.FLOWNOTE_DEV_MODE = '1'
+else delete childEnv.FLOWNOTE_DEV_MODE
 
 // The dev config is an overlay on tauri.conf.json. Keep versions in the
 // overlay-free canonical files aligned so a stale app version fails early.
@@ -46,10 +46,10 @@ const packageVersion = JSON.parse(readFileSync(resolve(repoRoot, 'package.json')
 const cargoManifest = readFileSync(resolve(repoRoot, 'app/Cargo.toml'), 'utf8')
 const cargoVersion = /^version\s*=\s*"([^"]+)"/mu.exec(cargoManifest)?.[1]
 const tauriVersion = JSON.parse(readFileSync(
-  resolve(repoRoot, 'app/flowix-desktop/tauri.conf.json'), 'utf8')).version
+  resolve(repoRoot, 'app/flownote-desktop/tauri.conf.json'), 'utf8')).version
 if (!packageVersion || packageVersion !== cargoVersion || packageVersion !== tauriVersion) {
   throw new Error(
-    `Flowix version mismatch: package=${packageVersion ?? '<missing>'}, ` +
+    `Flownote version mismatch: package=${packageVersion ?? '<missing>'}, ` +
     `Cargo=${cargoVersion ?? '<missing>'}, Tauri=${tauriVersion ?? '<missing>'}`,
   )
 }
@@ -115,17 +115,17 @@ if (withPi || !hasStagedPi()) {
 } else if (!existsSync(resolve(repoRoot, '.build', 'pi-runtime', 'provider-catalog.json'))) {
   run(process.execPath, [resolve(repoRoot, 'scripts/prepare-pi-catalog.mjs')])
 }
-childEnv.FLOWIX_PI_PROVIDER_CATALOG = resolve(repoRoot, '.build', 'pi-runtime', 'provider-catalog.json')
+childEnv.FLOWNOTE_PI_PROVIDER_CATALOG = resolve(repoRoot, '.build', 'pi-runtime', 'provider-catalog.json')
 // The desktop app can start without a local DSH source build. Keep the
 // heavyweight upstream checkout opt-in for contributors working on DSH itself.
-if (process.env.FLOWIX_BUILD_DSH === '1') {
+if (process.env.FLOWNOTE_BUILD_DSH === '1') {
   npmRun('dsh:build:dev')
 } else {
-  console.log('skipping local DSH build (set FLOWIX_BUILD_DSH=1 to enable)')
+  console.log('skipping local DSH build (set FLOWNOTE_BUILD_DSH=1 to enable)')
 }
 
 function runTauriDev() {
-  if (process.platform !== 'darwin' || childEnv.FLOWIX_DEV_MODE !== '1') {
+  if (process.platform !== 'darwin' || childEnv.FLOWNOTE_DEV_MODE !== '1') {
     run(process.execPath, [tauriEntrypoint, 'dev', '--config', configArg])
     return
   }

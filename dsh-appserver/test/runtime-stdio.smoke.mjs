@@ -1,4 +1,4 @@
-// Full-protocol runtime smoke over stdio against the installed Flowix DSH.
+// Full-protocol runtime smoke over stdio against the installed Flownote DSH.
 // Covers handshake discipline, error codes, thread/turn/fork lifecycle,
 // approval policy, credential and model config CRUD, session aliases,
 // event pagination, and crash-restart durability via the session log.

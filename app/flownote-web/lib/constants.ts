@@ -1,0 +1,285 @@
+/**
+ * 全局常量定义
+ *
+ * 主题相关 (ThemeId / THEME_OPTIONS / 颜色 vars / sanitize) 已迁到 lib/theme,
+ * 实际色板在 css/theme/*.css; 本文件保留非颜色 / 通用 / 偏好设置结构。
+ */
+
+import { SUPPORTED_TEXT_EXTENSIONS } from '@/types';
+import { DEFAULT_THEME_ID, type ThemeId } from '@/lib/theme';
+import type { ShortcutOverrides } from '@/lib/shortcuts';
+import { DEFAULT_APP_LANGUAGE, type AppLanguage, type Region } from '@/lib/i18n';
+import type { AgentTypeKey } from '@/types/agent';
+
+// 文件类型
+export const BINARY_EXTENSIONS = [
+  '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt',
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
+  '.mp3', '.mp4', '.wav', '.ogg', '.webm', '.avi', '.mov',
+  '.zip', '.tar', '.gz', '.rar', '.7z',
+  '.exe', '.dll', '.so', '.dylib',
+];
+
+/** 判断是否为文本文件 */
+export function isTextFile(fileName: string): boolean {
+  const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'));
+  return SUPPORTED_TEXT_EXTENSIONS.some(e => ext === e || fileName.toLowerCase().endsWith(e));
+}
+
+// UI 存储键名
+export const STORAGE_KEYS = {
+  CHAT: 'flownote-chat-storage',
+  AGENT_SESSION: 'flownote-agent-session-storage',
+  AGENT_DATA: 'flownote-agent-data-storage',
+  AGENT_CONVERSATIONS: 'flownote-agent-conversations',
+  AGENT_MESSAGE_FONT: 'flownote-agent-message-font',
+  SETTINGS: 'flownote-settings',
+  TAG: 'flownote-tag',
+  NOTE: 'flownote-note-storage',
+  CUSTOM_FILTER: 'flownote-custom-filter-storage',
+  BROWSER_COLUMN: 'flownote-browser-column-storage',
+  WORKSPACE_RESTORE: 'flownote-workspace-restore-storage',
+} as const;
+
+/* ============================================================
+ * User Settings (镜像后端 ~/.flownote/preference.json 结构)
+ * 字段与后端 PreferenceFile / *Config 一一对应, 改 nested 后:
+ *   - settings.personalize.customInstruction
+ *   - settings.format.fontFamily
+ *   - settings.theme
+ * 调用方传 updateSettings({ personalize: { customInstruction: 'x' } })
+ * 由 hooks/useUserSettings.ts 里的 mergeSettings 合并。
+ * ============================================================ */
+
+export interface PersonalizeConfig {
+  customInstruction: string;
+  responseLength: string;
+  preferredLanguage: string;
+  selectedTags: string[];
+}
+
+export interface FormatConfig {
+  /** 字体族 (CSS font-family stack) */
+  fontFamily: string;
+  fontId?: string;
+  /** 字号 (px) */
+  fontSize: number;
+  /** 行间距 (unitless line-height) */
+  lineHeight: number;
+  /** 文档编辑区宽度 (px)；大于 1000 表示全宽 */
+  documentWidth: number;
+  /**
+   * 页面宽度比例 (%)，作用在 documentWidth 之上。
+   * 100 表示保持 documentWidth 的现状；更小的值按比例收窄，两侧留白。
+   */
+  pageWidthScale: number;
+}
+
+export type { PropertyFieldType, PropertyPresetOption, PropertyFieldConfig, PropertiesConfig } from './property-types';
+
+export type MemoListView = 'detailed' | 'folders';
+
+/** 主窗口关闭按钮行为 ── minimize: 隐藏到系统托盘后台 (默认); exit: 直接退出。 */
+export type WindowCloseAction = 'minimize' | 'exit';
+
+export interface AgentsConfig {
+  enabledByType: Partial<Record<AgentTypeKey, boolean>>;
+}
+
+export interface ProductUpdatesConfig {
+  enabled: boolean;
+  lastCheckedAt: number;
+}
+
+export interface UserSettings {
+  personalize: PersonalizeConfig;
+  format: FormatConfig;
+  /** 主题 id, 顶层字段; 合法值与兜底逻辑见 lib/theme。 */
+  theme: ThemeId;
+  /** UI display language. Independent from personalize.preferredLanguage, which only guides AI replies. */
+  language: AppLanguage;
+  /**
+   * 安装时基于系统语言/时区识别的地区 (mainland / overseas)。
+   * 首次安装由 detectRegion() 写入并落盘, 后续尊重用户偏好 (虽然 UI
+   * 未提供手动修改入口, 但字段已落到 preference.json, 跨设备 / 备份恢复
+   * 时保持一致)。 与 `language` 同生命周期。
+   */
+  region: Region;
+  /** Whether notes are shown as cards or in the notebook file tree. */
+  memoListView: MemoListView;
+  /** Whether newly created notes are automatically opened in the Browser Column. */
+  autoOpenCreatedNotesInBrowser: boolean;
+  /** 主窗口关闭按钮行为; 持久化到 preference.json 的 `windowCloseAction`。 */
+  windowCloseAction: WindowCloseAction;
+  /**
+   * 快捷键用户覆盖层 — actionId → chord 字符串 (e.g. 'Mod+Shift+K')。
+   * 只存与 ActionDefinition.defaultBinding 不同的部分, 缺省走默认。
+   * 持久化到后端 ~/.flownote/preference.json 的 `shortcuts` 字段 (camelCase),
+   * 后端 schema 见 backend/src/user_config.rs::PreferenceFile。
+   */
+  shortcuts: ShortcutOverrides;
+  /** 用户主动配置过的自定义属性字段定义, 持久化到 preference.json。 */
+  agents: AgentsConfig;
+  productUpdates: ProductUpdatesConfig;
+}
+
+/**
+ * 可选字体列表 - 与 menu-board.tsx 中 Font 下拉选项保持同步。
+ * key 是 UI 标签, value 是写入 CSS 的 font-family stack。
+ */
+export type FontSource = 'bundled' | 'system' | 'downloadable';
+
+export interface FontFamilyOption {
+  id: string;
+  label: string;
+  value: string;
+  source: FontSource;
+}
+
+export const INTER_FONT_STACK = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+export const NOTO_SERIF_SC_FONT_STACK = "'Noto Serif SC', 'Songti SC', 'SimSun', Georgia, serif";
+export const LXGW_WENKAI_FONT_STACK = "'霞鹜文楷', 'LXGW WenKai', 'Nunito Sans', 'PingFang SC', sans-serif";
+
+export const FONT_FAMILY_OPTIONS: FontFamilyOption[] = [
+  {
+    id: 'inter',
+    label: 'Inter',
+    value: INTER_FONT_STACK,
+    source: 'bundled',
+  },
+  {
+    id: 'nunito-sans',
+    label: 'Nunito Sans',
+    value: "'Nunito Sans', 'Inter', -apple-system, 'Segoe UI', sans-serif, BlinkMacSystemFont",
+    source: 'bundled',
+  },
+  {
+    id: 'noto-sans-sc',
+    label: 'Noto Sans',
+    value: "'Noto Sans SC', 'Nunito Sans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif",
+    source: 'downloadable',
+  },
+  {
+    id: 'noto-serif-sc',
+    label: 'Noto Serif',
+    value: NOTO_SERIF_SC_FONT_STACK,
+    source: 'downloadable',
+  },
+  {
+    id: 'lxgw-wenkai',
+    label: '霞鹜文楷',
+    value: LXGW_WENKAI_FONT_STACK,
+    source: 'downloadable',
+  },
+  {
+    id: 'pingfang-sc',
+    label: 'PingFang SC',
+    value: "'PingFang SC', 'Microsoft YaHei', sans-serif",
+    source: 'system',
+  },
+  {
+    id: 'microsoft-yahei',
+    label: 'Microsoft YaHei',
+    value: "'Microsoft YaHei', 'PingFang SC', sans-serif",
+    source: 'system',
+  },
+  {
+    id: 'system-ui',
+    label: 'System UI',
+    value: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+    source: 'system',
+  },
+  {
+    id: 'serif',
+    label: 'Serif',
+    value: "Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif",
+    source: 'system',
+  },
+  {
+    id: 'monospace',
+    label: 'Monospace',
+    value: "'JetBrains Mono', 'Anonymous Pro', 'Consolas', 'Menlo', monospace",
+    source: 'system',
+  },
+];
+
+/** 字号范围 (px) */
+export const FONT_SIZE_MIN = 12;
+export const FONT_SIZE_MAX = 24;
+export const FONT_SIZE_STEP = 1;
+
+/** 行间距范围 (unitless) */
+export const LINE_HEIGHT_MIN = 1.0;
+export const LINE_HEIGHT_MAX = 2.4;
+export const LINE_HEIGHT_STEP = 0.05;
+
+/** 文档编辑区宽度 (px)；500–1000 为固定宽度，1050 为全宽档位 */
+export const DOCUMENT_WIDTH_MIN = 500;
+export const DOCUMENT_WIDTH_FULL_THRESHOLD = 1000;
+export const DOCUMENT_WIDTH_MAX = DOCUMENT_WIDTH_FULL_THRESHOLD + 50;
+export const DOCUMENT_WIDTH_STEP = 50;
+export const DOCUMENT_WIDTH_DEFAULT = DOCUMENT_WIDTH_MAX;
+
+/**
+ * 页面宽度比例 (%)，相对当前 documentWidth 生效。
+ * 100 保持现状，50 为最窄档；档位取 5 的倍数, 让拖动时不会出现零碎百分比。
+ */
+export const PAGE_WIDTH_SCALE_MIN = 50;
+export const PAGE_WIDTH_SCALE_MAX = 100;
+export const PAGE_WIDTH_SCALE_STEP = 5;
+export const PAGE_WIDTH_SCALE_DEFAULT = PAGE_WIDTH_SCALE_MAX;
+
+export function normalizePageWidthScale(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return PAGE_WIDTH_SCALE_DEFAULT;
+  const clamped = Math.min(PAGE_WIDTH_SCALE_MAX, Math.max(PAGE_WIDTH_SCALE_MIN, value));
+  return Math.round(clamped / PAGE_WIDTH_SCALE_STEP) * PAGE_WIDTH_SCALE_STEP;
+}
+
+export const DEFAULT_USER_SETTINGS: UserSettings = {
+  personalize: {
+    customInstruction: '',
+    // 字段值必须与 general.tsx 中 <SelectItem value=...> 的可选值一致,
+    // 否则下拉显示空白。preferredLanguage 之前误写 'zh' 不会匹配任何选项。
+    responseLength: 'standard',
+    preferredLanguage: 'Simplified Chinese',
+    selectedTags: [],
+  },
+  format: {
+    fontFamily: FONT_FAMILY_OPTIONS[0].value,
+    fontId: FONT_FAMILY_OPTIONS[0].id,
+    fontSize: 16,
+    lineHeight: 1.8,
+    documentWidth: DOCUMENT_WIDTH_DEFAULT,
+    pageWidthScale: PAGE_WIDTH_SCALE_DEFAULT,
+  },
+  // 默认值收敛到 lib/theme/DEFAULT_THEME_ID — 改默认值改一处即可。
+  theme: DEFAULT_THEME_ID,
+  language: DEFAULT_APP_LANGUAGE,
+  // loadInitial 阶段会被 detectRegion() 覆盖为真实值; 默认 'mainland'
+  // 让大陆特性 (MiniMax / GLM 等) 在 SSR / IPC 还没回来时也可见。
+  region: 'mainland',
+  memoListView: 'folders',
+  autoOpenCreatedNotesInBrowser: true,
+  windowCloseAction: 'minimize',
+  // 启动时无任何用户覆盖, 所有 action 走 ActionDefinition.defaultBinding。
+  shortcuts: {},
+  agents: {
+    enabledByType: {},
+  },
+  productUpdates: {
+    enabled: true,
+    lastCheckedAt: 0,
+  },
+};
+
+// UI 常量
+export const DEFAULT_REQUEST_TIMEOUT = 600000;
+
+// ---------- Toast 视觉常量 ----------
+
+/** 单条 toast 默认展示时长 (ms) */
+export const TOAST_DURATION_MS = 1600;
+
+/** Toast 阴影 (用于内联 box-shadow) */
+export const TOAST_SHADOW =
+  '0 16px 40px rgba(15,18,25,0.22), 0 3px 10px rgba(15,18,25,0.18)';

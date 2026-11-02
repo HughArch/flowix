@@ -1,4 +1,4 @@
-// HTTP/SSE transport smoke against the installed Flowix DSH runtime: boots the
+// HTTP/SSE transport smoke against the installed Flownote DSH runtime: boots the
 // plugin with the HTTP transport (no stdio) and covers /rpc dispatch, health
 // endpoints, per-connection initialize isolation via x-dsh-client-id, SSE
 // history replay with afterSeq cursors, and body-size limits.

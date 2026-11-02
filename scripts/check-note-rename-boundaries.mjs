@@ -4,7 +4,7 @@ import { resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const WEB_ROOT = resolve(REPO_ROOT, 'app/flowix-web');
+const WEB_ROOT = resolve(REPO_ROOT, 'app/flownote-web');
 const ALLOWED_RENAME_CALLER = 'features/document/use-cases/local-document-operations.ts';
 const ALLOWED_RENAME_COMMAND_CALLER = 'platform/tauri/client/desktop.ts';
 const RAW_RENAME_COMMANDS = new Set(['rename_file', 'rename_memo_title']);

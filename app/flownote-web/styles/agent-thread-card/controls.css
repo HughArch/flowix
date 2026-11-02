@@ -1,0 +1,674 @@
+/* ── Header icon button (共享基类) ──────────────────────────────────────
+ * header 右侧 actions 区的四个方形按钮 (折叠 / 删除 / 全屏 / 打开侧边栏)
+ * 在视觉上完全同源 ── 28×28 方形 + 0.38rem 圆角 + muted-foreground 文字
+ * 色 + hover var(--muted) 70% 透混背景 + 前景色。
+ *
+ * 之前各自重复 14 行 CSS ── 改基类 + 4 个具体 class 只放"独有"扩展点。
+ * 语义解耦靠具体 className (--collapse / --delete / --fullscreen /
+ * --open-panel) 维持, 视觉同源靠共享基类统一 ── 两件事各司其职。
+ *
+ * ── 颜色用 var(--muted-foreground), 跟随主题 ──
+ *   - 各主题都定义了 --muted-foreground, 与
+ *     __meta 等"次要文字"位置用同一 token, 跨主题视觉一致。
+ *   - 原先的固定灰色在暗色和暖色主题下都不匹配 ── 改 token 后自动跟随主题。
+ *
+ * 选类名 __icon-btn (而非 __header-btn) ── 后续若 composer / footer
+ * 等位置出现同款方形按钮可直接复用同一基类, 不必再起一个名字。 */
+.markdown-editor .agent-thread-card__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0.38rem;
+  color: var(--muted-foreground);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.markdown-editor .agent-thread-card__icon-btn:hover {
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--foreground);
+}
+
+/* __icon-btn 默认 display: inline-flex 优先级等同 [hidden] (各 0,1,0),
+ * 且因后定义而胜出, 导致按钮设 hidden 仍占位 ── 在基类层显式声明
+ * [hidden] = display: none, 任何 __icon-btn 子类 (delete / fullscreen /
+ * collapse) 设 hidden 都能正确隐藏。 */
+.markdown-editor .agent-thread-card__icon-btn[hidden] {
+  display: none;
+}
+
+/* 折叠按钮 ── 14×14 Caret 图标。
+ * 颜色与 meta 文字一致 (muted-foreground), hover 时背景 var(--muted) 形成
+ * "可点击"暗示。不用圆形是因为只有 22px, 圆角 5px 与 agent-icon 视觉对齐。 */
+.markdown-editor .agent-thread-card__collapse {
+  /* 视觉由 __icon-btn 提供 ── 这里仅放独有扩展点 (当前无) */
+}
+
+.markdown-editor .agent-thread-card__chevron-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+  /* 折叠态旋转 180° ── DOM 只挂一个 chevron-down SVG, 通过 CSS transform
+   * 翻成 chevron-up, 比 TS 端 replaceChildren+append 重建节点更省 ──
+   * SVG path 不变, 不重新创建节点, 不重新触发 layout, 旋转也走 GPU
+   * 合成层。transition 配合状态切换给出 150ms 的平滑动画, 比硬切更
+   * 柔和。 */
+  transition: transform 150ms ease;
+}
+
+.markdown-editor
+  .agent-thread-card--collapsed
+  .agent-thread-card__chevron-icon {
+  transform: rotate(180deg);
+}
+
+.markdown-editor .agent-thread-card--fullscreen .agent-thread-card__collapse {
+  display: none;
+}
+
+/* reasoning 消息折叠态旋转 ── 与卡片级 collapse 按钮同源思路, 复用
+ * .agent-thread-card__chevron-icon class 命中 SVG。父级折叠类挂在
+ * per-message item 上 (agent-thread-card__message--reasoning-collapsed),
+ * 不与 card 根的 .--collapsed 耦合 ── 卡片折叠时 body display:none 整体
+ * 隐藏, reasoning chevron 不会渲染; 反之卡片展开、某条 reasoning 折叠
+ * 时, 这里的修饰类仍然能命中。每条 reasoning 独立切旋转, 与父级
+ * card 折叠态解耦。 */
+.markdown-editor
+  .agent-thread-card__message--reasoning:not(
+    .agent-thread-card__message--reasoning-collapsed
+  )
+  .agent-thread-card__chevron-icon {
+  transform: rotate(90deg);
+}
+
+.markdown-editor
+  .agent-thread-card__message--reasoning-collapsed
+  .agent-thread-card__chevron-icon {
+  transform: rotate(0deg);
+}
+
+/* 删除对话按钮 ── 位于折叠按钮左侧, 视觉同 __icon-btn 基类 ──
+ * hover 色不用 destructive: 当前是文件 icon 在 muted 体系里, hover 走 var(--muted)
+ * 跟其他三个按钮保持一致; 真要做 destructive 高亮应该放在删除确认弹窗阶段, 而
+ * 不是把单按钮 hover 染色 ── 那会跟其他三个按钮形成视觉不协调, 反而弱化警示。
+ *
+ * ── 为什么保留独立 className ──
+ *   - 语义解耦: __collapse 是'折叠/展开', __delete 是'删除对话', 行为完全不同。
+ *   - 未来扩展: __delete 可能加二次确认 / loading 态 / 错误提示, __collapse 不会。
+ *   - DevTools 可读性: 看 className 就能直接区分。 */
+.markdown-editor .agent-thread-card__delete {
+  /* 视觉由 __icon-btn 提供; 删除按钮 hover 只提示 error 色, 不改变背景。 */
+}
+
+.markdown-editor .agent-thread-card__delete:hover {
+  background: transparent;
+  color: var(--destructive);
+}
+
+/* 复用 __copy-icon 口径 ── 14×14, color 继承按钮文字色, 不缩小。
+ * 之所以独立类不复用, 是因为以后可能给删除按钮单独调 hover 色或加危险态, 独立类
+ * 给未来留扩展空间。 */
+.markdown-editor .agent-icon__trash {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* 全屏按钮 ── 视觉同 __icon-btn 基类。 */
+.markdown-editor .agent-thread-card__fullscreen {
+  /* 视觉由 __icon-btn 提供 ── 这里仅放独有扩展点 (当前无) */
+}
+
+.markdown-editor .agent-thread-card__fullscreen-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* 查看笔记按钮 ── 在右侧列对话 (AgentConversationDetail) header 的
+ * actions 区出现, 视觉同 __icon-btn 基类。 仅在 source.relativePath /
+ * source.documentPath 存在时启用; dedicated 对话没有来源笔记, 整段
+ * "[icon] | …" 操作组被隐藏, 只剩 "…" 入口供删除。
+ *
+ * 图标借用 Phosphor 的 FileTextIcon, 颜色继承按钮文字色, 与全屏 /
+ * 折叠 / 删除等图标保持口径一致。 */
+.markdown-editor .agent-thread-card__view-note {
+  /* 视觉由 __icon-btn 提供 ── 这里仅放独有扩展点 (当前无) */
+}
+
+.markdown-editor .agent-thread-card__view-note-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* 无来源文档占位 ── dedicated 对话 (kind === 'dedicated') 没有关联笔记,
+ * 在 view-note 按钮原本的位置展示断链图标。视觉重量弱于 28×28 图标按钮,
+ * 跟 header 右侧主标题区形成层级 ── 让用户一眼看到"这条对话是独立的",
+ * 而不会误以为按钮坏了。
+ *
+ * ── 几何 ──
+ *   - height: 28px ── 与 28×28 图标按钮同高, 在 flex 容器 (gap: 4px)
+ *     里两者上下边缘对齐, 不出现 header 高度跳变。
+ *   - width: 28px ── 与相邻图标按钮保持相同点击区域口径, 但不赋予它
+ *     可交互语义。
+ *
+ * ── 颜色 ──
+ *   - var(--muted-foreground) ── 跟其它 header 弱交互元素同 token,
+ *     暗示"这是辅助信息, 不是可点击的操作"。 */
+.markdown-editor .agent-thread-card__no-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--muted-foreground);
+  user-select: none;
+  cursor: default;
+}
+
+/* "…" 下拉触发按钮 ── 视觉同 __icon-btn 基类, glyph 由基类居中布局消化,
+ * 这里只放独有扩展点。当前没有自定义样式, 保留空规则以维持 selector
+ * 的语义锚点, 未来若需要微调 (例如触发态颜色) 直接在这里补。 */
+.markdown-editor .agent-thread-card__more {
+  /* 视觉由 __icon-btn 提供 ── 这里仅放独有扩展点 (当前无) */
+}
+
+/* "…" 图标 ── 14×14, color 继承按钮文字色, 与全屏 / 折叠 / 删除
+ * 等图标的尺寸口径一致 (14×14)。lucide 的 MoreHorizontal 默认 stroke
+ * 略细, 在 28px 方格里视觉重量跟其他基类图标持平, 不需要再调粗细。 */
+.markdown-editor .agent-thread-card__more-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* Dedicated conversation navigation owns the fullscreen state. The selected
+ * card remains the right-hand conversation surface until the user changes
+ * navigation, so there is intentionally no inline "exit fullscreen" control. */
+.flownote-main-layout[data-agent-conversation-view='true']
+  .agent-thread-card--fullscreen
+  .agent-thread-card__fullscreen,
+.flownote-main-layout[data-agent-conversation-view='true']
+  .agent-thread-card--fullscreen
+  .agent-thread-card__actions-divider {
+  display: none;
+}
+
+/* 全屏 / 删除按钮之间的竖向分割线 ── 把"视图操作"与"破坏性操作"
+ * 在视觉上明确分组, 减少误删概率。
+ *
+ * ── 几何 ──
+ *   - 1px × 16px, 比按钮 28px 短, 让分割线"漂浮"在按钮中部而非顶满。
+ *     这样视觉上更像一个分隔标记, 不至于与按钮边框抢眼。
+ *   - background-color 而非 border ── 1px border 在 28px flexbox 容器
+ *     里会因 box-sizing 撑大 0.5px, 而 background 完全不影响几何。
+ *   - border-radius 0.5px 让两端圆滑, 避免 1px 实心方块的"硬边"感。
+ *
+ * ── 颜色 ──
+ *   - var(--border) ── 各主题都有定义, 与卡片
+ *     其它 1px 描边 (e.g. agent-type-badge) 用同一 token, 视觉一致。
+ *   - 不用 var(--muted-foreground) ── 那是文字色 token, 在分割线这
+ *     种"非文字"几何元素上复用偏亮, 会让分割线变成"第二条文字"。 */
+.markdown-editor .agent-thread-card__actions-divider {
+  display: block;
+  width: 1px;
+  height: 16px;
+  align-self: center;
+  background-color: var(--border);
+  border-radius: 0.5px;
+}
+
+.markdown-editor .agent-thread-card__actions-divider[hidden] {
+  display: none;
+}
+
+.markdown-editor .agent-thread-card__copy-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* 消息区 ── grid 1fr 中间行, min-height: 0 允许被 max-height 收缩。
+ *
+ *  - grid 1fr 在显式 grid-template-rows 下 = 父级高度 - 头尾,
+ *    永远确定, overflow-y: auto 触发条件天然满足。
+ *  - min-height: 0 允许 body 行被 max-height 父级收缩 (否则 grid
+ *    行默认 min-height: auto 会被内容撑开, max-height 形同虚设)。
+ *  - padding 上下 3.6rem / 左右 12px ── 上下留白让首/末条消息
+ *    不会"贴"在 header 下沿 / composer 上沿, 滚动到边界时消息与
+ *    卡片边缘有缓冲。3.6rem ≈ 57.6px (16px 根字号), 接近 composer
+ *    高度 (≈55px), 给消息"与 composer 对齐的呼吸感"。左右 12px
+ *    保持与原来一致, 不影响消息气泡的左右间距。 */
+.markdown-editor .agent-thread-card__body {
+  /* The message renderer owns the visible-row scroll anchor. */
+  overflow-anchor: none;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  /* Keep a small scroll-end safe area below the persistent 38px loading
+   * indicator. WebView2 can otherwise clip its bottom edge when Windows
+   * display scaling produces a fractional scroll boundary. */
+  padding: 2rem 1.5rem 4px 1.5rem;
+  /* transition 配合 .--collapsed 折叠: padding 3.6rem 12px → 0, 150ms ease 塌缩。
+   * 注: 现在折叠改用 display: none ── body 直接消失; padding transition
+   * 仍保留, 给后续若想"保留行只压内容"的玩法留接口。 */
+  opacity: 1;
+  transition:
+    padding 150ms ease,
+    opacity 120ms ease;
+}
+
+/* A click transfers wheel ownership to the embedded message viewport. Keep a
+ * quiet top/bottom inset cue on the whole card until the user clicks elsewhere. */
+.markdown-editor
+  .agent-thread-card.agent-thread-card--message-scroll-active
+  > .agent-thread-card__container {
+  box-shadow:
+    inset 0 5px 14px -8px color-mix(in oklch, var(--brand) 18%, transparent),
+    inset 0 -5px 14px -8px color-mix(in oklch, var(--brand) 18%, transparent),
+    inset 5px 0 14px -8px color-mix(in oklch, var(--brand) 18%, transparent),
+    inset -5px 0 14px -8px color-mix(in oklch, var(--brand) 18%, transparent);
+}
+
+html[data-platform="mac"] .markdown-editor .agent-thread-card__body-frame {
+  min-height: 0;
+  height: 100%;
+}
+
+html[data-platform="mac"] .markdown-editor .agent-thread-card__body-frame > .agent-thread-card__body {
+  height: 100%;
+  scrollbar-gutter: auto;
+}
+
+.markdown-editor .agent-thread-card--fullscreen .agent-thread-card__body {
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  padding-inline: 0;
+}
+
+/* 全屏 Thread Card 的 header 会被移到 work-column titlebar, 因此消息
+ * body 是 grid 的第一块可见区域。复用独立 Agent 对话的顶部滚动提示：
+ * sticky 伪元素不会增加布局高度，只有 body 已向下滚动时才显示，避免
+ * 在消息区顶部制造一条常驻分隔线。 */
+.markdown-editor
+  .agent-thread-card--fullscreen
+  .agent-thread-card__body::before {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  width: 100%;
+  height: 8px;
+  margin-bottom: -8px;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--foreground) 1%, transparent),
+    transparent
+  );
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.markdown-editor
+  .agent-thread-card--fullscreen
+  .agent-thread-card__body.agent-thread-card__body--scrolled::before {
+  opacity: 1;
+}
+
+/* Dedicated right-panel conversation surface. It deliberately uses the same
+ * message/composer classes as Thread Card, but is a normal flex layout rather
+ * than the card's fixed-position fullscreen mode. */
+.agent-conversation-detail .agent-conversation-detail__card {
+  margin: 0;
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--agent-bg, var(--document-bg));
+}
+
+.agent-conversation-detail {
+  background: var(--agent-bg, var(--document-bg));
+}
+
+/* 独立 Agent 对话标题栏与消息区使用完全相同的纯色背景。
+ * 只作用于 AgentConversationTitlebar, 不覆盖布局级 --bg-titlebar, 因此
+ * 普通文档标题栏、偏好设置标题栏和 WindowsTitlebarControls 保持原样。 */
+.agent-conversation-titlebar {
+  background-color: var(--agent-bg, var(--document-bg));
+  background-image: none;
+}
+
+/* Agent-owned titlebars use the same surface as the conversation body. This
+ * class is intentionally independent of fullscreen state so Browser Column
+ * conversations and fullscreen embedded Thread Cards cannot drift apart. */
+.agent-surface-titlebar {
+  background-color: var(--agent-bg, var(--document-bg));
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--primary) 3%, transparent),
+    transparent
+  );
+}
+
+/* Media resources share the same surface background as conversations, while
+ * keeping their own semantic chrome type. */
+.media-surface-titlebar {
+  background-color: var(--agent-bg, var(--document-bg));
+  background-image: none;
+}
+
+/* WebView native video controls are painted inside the replaced element and
+ * may ignore the element's border-radius at the corners. Clip the complete
+ * rendered layer so the controls' gray overlay follows the same radius,
+ * without introducing a sizing wrapper that could crop the video. */
+.media-resource-video {
+  clip-path: inset(0 round 0.5rem);
+}
+
+/* The native WebKit controls panel is darker than the media surface by
+ * default. Keep the native controls, but make their gray mask lighter and
+ * semi-transparent so the video remains visible underneath. */
+.media-resource-video::-webkit-media-controls-panel {
+  background-color: rgb(96 96 96 / 50%);
+  background-image: none;
+}
+
+/* Keep the relocated control's shape identical to the Thread Card's former
+ * fullscreen button: transparent, borderless, and 28px square. Its error
+ * color makes the exit action easier to spot in the titlebar. */
+.agent-thread-card-fullscreen-exit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0.38rem;
+  color: var(--destructive);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.agent-thread-card-fullscreen-exit-btn:hover {
+  color: var(--foreground);
+}
+
+.agent-thread-card-fullscreen-exit-btn .agent-thread-card__fullscreen-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* Keep the standalone Agent conversation surface on the product font, like
+ * embedded Thread Cards. The nested Tiptap composer opts into the user font
+ * on its own editor element. */
+.markdown-editor.agent-conversation-detail {
+  font-family: var(--font-sans);
+}
+
+/* 右侧列对话详情 (AgentConversationDetail) header ── 与内嵌 Thread Card
+ * 共享同一套基类 .agent-thread-card__header (40px 高 + 0.8rem 左右内边距 +
+ * flex space-between + 28×28 icon-btn)。 这里只覆盖两件内嵌卡片做不到 /
+ * 不该做的事:
+ *
+ *   - `flex: 0 0 auto` 让 header 不参与父级 flex 收缩 ── 内嵌卡片的 header
+ *     在 grid 容器里 (grid-template-rows: var(--atc-header-h) 1fr auto)
+ *     已经固定 40px, 不需要这条; 但右侧列是普通 flex column, header 要
+ *     显式锁住高度, 否则被兄弟 (body / composer) 挤成 0.
+ *   - `cursor: default` ── 内嵌卡片 header 是 `cursor: grab` (fullscreen
+ *     时整张卡片可被窗口拖动); 右侧列对话是布局内固定 surface, 不参与
+ *     拖拽, 这里覆盖 grab → default, 视觉上跟其它静态 header (如主窗口
+ *     标题栏) 一致。
+ *
+ * 不再覆盖 width / padding / margin ── 0.8rem 内边距由基类提供, header
+ * 撑满父级宽度, 与内嵌卡片全屏态同源; 内容区 (body / messages) 的 780px
+ * 居中由各自 selector 单独约束, 互不干扰。 */
+.markdown-editor.agent-conversation-detail .agent-conversation-detail__header {
+  flex: 0 0 auto;
+  cursor: default;
+}
+
+/* The exit action lives in the work-column titlebar while an embedded card
+ * is fullscreen. Keep the card's own entry/exit control for inline mode and
+ * avoid rendering a duplicate exit button in the fullscreen card header. */
+.flownote-main-layout .agent-thread-card--fullscreen .agent-thread-card__fullscreen,
+.flownote-main-layout .agent-thread-card--fullscreen .agent-thread-card__actions-divider {
+  display: none;
+}
+
+.agent-conversation-detail__body-shell {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.agent-conversation-detail .agent-thread-card__body {
+  height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable both-edges;
+  padding-inline: 0;
+}
+
+html[data-platform="mac"] .agent-conversation-detail .agent-thread-card__body {
+  scrollbar-gutter: auto;
+}
+
+.agent-conversation-detail__composer-stack {
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* Keep the running indicator on the same message-column track in every
+ * Thread Card mode. Expanded surfaces below narrow this shared track. */
+.markdown-editor .agent-thread-card__messages,
+.markdown-editor .agent-thread-card__body > .agent-thread-card__loading-indicator {
+  width: 100%;
+}
+
+/* 独立对话的消息区不允许长 URL / token / 代码行把整个 surface 撑出
+ * 横向滚动。仅限第三列 AgentConversationDetail, 不影响文档内嵌卡片及其
+ * fullscreen 模式。 */
+.markdown-editor.agent-conversation-detail .agent-thread-card__messages,
+.markdown-editor.agent-conversation-detail .agent-thread-card__message,
+.markdown-editor.agent-conversation-detail .agent-thread-card__message-content {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markdown-editor.agent-conversation-detail .agent-thread-card__message-content pre,
+.markdown-editor.agent-conversation-detail .agent-thread-card__message-content code,
+.markdown-editor.agent-conversation-detail .agent-thread-card__message-content table {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markdown-editor.agent-conversation-detail .agent-thread-card__message-content pre {
+  white-space: pre-wrap;
+}
+
+.markdown-editor.agent-conversation-detail .agent-thread-card__messages,
+.markdown-editor.agent-conversation-detail .agent-thread-card__skeleton,
+.markdown-editor.agent-conversation-detail .agent-thread-card__loading-indicator {
+  width: calc(100% - 3rem);
+  max-width: 780px;
+  margin-inline: auto;
+}
+
+.markdown-editor.agent-conversation-detail .agent-composer {
+  align-self: center;
+  width: calc(100% - 3rem);
+  max-width: 780px;
+  margin: 0 auto 0.6rem;
+}
+
+.markdown-editor
+  .agent-thread-card--thread-cache-loading
+  .agent-thread-card__body {
+  pointer-events: none;
+}
+
+/* 折叠态 ── 隐藏 body / composer, 卡片仅保留 header。
+ * grid 容器 (.agent-thread-card__container) 中 1fr 行在 body
+ * display: none 时, grid 把它的轨道高缩到 0, composer 行被
+ * grid-template-rows 推到 body 顶 ── 视觉上等同于"body 消失,
+ * composer 顶到 header 下"。注意: --collapsed 类仍挂在卡片根
+ * (.agent-thread-card) 上, 通过后代选择器跨过 __container 命中
+ * 各子元素。
+ *
+ * min-height 显式归 0 ── 否则基线 13rem 会把折叠态撑成 13rem
+ * 高 (只剩 header 时仍锁在 13rem, 折叠按钮毫无意义)。 */
+.markdown-editor .agent-thread-card--collapsed .agent-thread-card__container {
+  min-height: 0;
+}
+
+.markdown-editor .agent-thread-card--collapsed .agent-thread-card__body {
+  display: none;
+}
+
+html[data-platform="mac"] .markdown-editor .agent-thread-card--collapsed .agent-thread-card__body-frame {
+  display: none;
+}
+
+.markdown-editor .agent-thread-card--collapsed .agent-composer {
+  display: none;
+}
+
+.markdown-editor .agent-thread-card__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.markdown-editor .agent-thread-card__skeleton {
+  display: flex;
+  width: 100%;
+  max-width: 780px;
+  flex-direction: column;
+  gap: 18px;
+  margin: 0 auto;
+  padding: 2px 0 4px;
+}
+
+.markdown-editor .agent-thread-card__skeleton-item {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.markdown-editor .agent-thread-card__skeleton-item--assistant,
+.markdown-editor .agent-thread-card__skeleton-item--user {
+  flex-direction: column;
+}
+
+.markdown-editor .agent-thread-card__skeleton-item--user {
+  width: min(76%, 420px);
+  align-self: flex-end;
+}
+
+.markdown-editor .agent-thread-card__skeleton-item--user.agent-thread-card__skeleton-item--left {
+  align-self: flex-start;
+}
+
+.markdown-editor .agent-thread-card__skeleton-line {
+  display: block;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--muted-foreground) 7%, transparent);
+}
+
+.markdown-editor .agent-thread-card__skeleton-lines {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.markdown-editor .agent-thread-card__skeleton-line {
+  height: 14px;
+}
+
+.markdown-editor .agent-thread-card__skeleton-line--long {
+  width: 88%;
+}
+
+.markdown-editor .agent-thread-card__skeleton-line--medium {
+  width: 64%;
+}
+
+.markdown-editor .agent-thread-card__skeleton-line--short {
+  width: 38%;
+}
+
+.markdown-editor
+  .agent-thread-card__skeleton-item--user
+  .agent-thread-card__skeleton-lines {
+  align-items: flex-end;
+}
+
+.markdown-editor
+  .agent-thread-card__skeleton-item--user.agent-thread-card__skeleton-item--left
+  .agent-thread-card__skeleton-lines {
+  align-items: flex-start;
+}
+
+.markdown-editor
+  .agent-thread-card--fullscreen
+  .agent-thread-card__skeleton {
+  width: calc(100% - 3rem);
+}
+
+.markdown-editor .agent-thread-card--fullscreen .agent-thread-card__messages,
+.markdown-editor
+  .agent-thread-card--fullscreen
+  .agent-thread-card__loading-indicator {
+  width: calc(100% - 3rem);
+  max-width: 780px;
+  margin-inline: auto;
+}
+
+.markdown-editor .agent-thread-card__messages > * {
+  max-width: 100%;
+}

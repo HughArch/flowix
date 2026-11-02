@@ -4,7 +4,7 @@ name: Release
 #   - push of a tag matching v* (e.g. v1.0.3)
 #   - manual workflow_dispatch (for ad-hoc dry runs)
 #
-# Flowix artifacts are built and kept in a GitHub draft here. This workflow
+# Flownote artifacts are built and kept in a GitHub draft here. This workflow
 # does not update the R2 updater endpoints; the explicit local
 # `npm run release:updater` flow remains the only production updater
 # publication path.
@@ -17,7 +17,7 @@ name: Release
 #   APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_PRIVATE_KEY
 # Required for signed Windows release artifacts:
 #   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD, WINDOWS_CERT_THUMBPRINT, WINDOWS_TIMESTAMP_URL
-# Required for signed Flowix updater artifacts (macOS + Windows):
+# Required for signed Flownote updater artifacts (macOS + Windows):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 on:
@@ -97,8 +97,8 @@ jobs:
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
-          certificate="$RUNNER_TEMP/flowix-developer-id.p12"
-          keychain="$RUNNER_TEMP/flowix-signing.keychain-db"
+          certificate="$RUNNER_TEMP/flownote-developer-id.p12"
+          keychain="$RUNNER_TEMP/flownote-signing.keychain-db"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
@@ -126,7 +126,7 @@ jobs:
           echo "APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
           echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
 
-      - name: Build Flowix CLI sidecar
+      - name: Build Flownote CLI sidecar
         shell: bash
         run: |
           npm run cli:build:prod -- --target=${{ matrix.target }}
@@ -142,7 +142,7 @@ jobs:
             *) echo "Unsupported Pi release target: ${{ matrix.target }}" >&2; exit 1 ;;
           esac
           node scripts/prepare-pi-bundle.mjs --platform "$platform" --arch "$arch"
-          echo "FLOWIX_PI_TARGET_ARCH=$arch" >> "$GITHUB_ENV"
+          echo "FLOWNOTE_PI_TARGET_ARCH=$arch" >> "$GITHUB_ENV"
 
       - name: Import Windows signing certificate for Tauri
         if: matrix.target == 'x86_64-pc-windows-msvc'
@@ -152,7 +152,7 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
         run: |
-          $pfx = Join-Path $env:RUNNER_TEMP 'flowix-signing.pfx'
+          $pfx = Join-Path $env:RUNNER_TEMP 'flownote-signing.pfx'
           try {
             [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
             $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
@@ -172,7 +172,7 @@ jobs:
         env:
           WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
           WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
-          FLOWIX_REQUIRE_SIGNED_INSTALLER_HELPER: '1'
+          FLOWNOTE_REQUIRE_SIGNED_INSTALLER_HELPER: '1'
         run: node scripts/build-windows-installer-helper.mjs
 
       - name: Prepare production Tauri config
@@ -214,7 +214,7 @@ jobs:
 
         with:
           tagName: v__VERSION__
-          releaseName: "Flowix v__VERSION__"
+          releaseName: "Flownote v__VERSION__"
           releaseBody: |
             See the [CHANGELOG] for the full set of changes.
 

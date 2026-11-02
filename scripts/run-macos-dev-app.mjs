@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const appPath = path.join(repoRoot, '.build', 'macos-dev', 'Flowix Dev.app')
+const appPath = path.join(repoRoot, '.build', 'macos-dev', 'Flownote Dev.app')
 const registerScript = path.join(repoRoot, 'scripts', 'register-macos-dev-app.mjs')
 const runnerArgs = process.argv.slice(2)
 const separator = runnerArgs.indexOf('--')
@@ -40,7 +40,7 @@ if (registration.status !== 0) process.exit(registration.status ?? 1)
 // Launch Services owns the app process, so killing `open -W` alone does not
 // stop it. Reusing that process after a rebuild leaves new JS talking to old
 // Rust commands. Match this checkout's executable only, never production.
-const executablePath = realpathSync(path.join(appPath, 'Contents', 'MacOS', 'flowix-desktop'))
+const executablePath = realpathSync(path.join(appPath, 'Contents', 'MacOS', 'flownote-desktop'))
 function devAppPids() {
   const result = spawnSync('/bin/ps', ['-axo', 'pid=,comm='], { encoding: 'utf8' })
   if (result.error) throw result.error
@@ -69,7 +69,7 @@ async function stopDevApp() {
 
 await stopDevApp()
 const openArgs = ['-n', '-W', '-a', appPath]
-for (const name of ['FLOWIX_PI_PROVIDER_CATALOG']) {
+for (const name of ['FLOWNOTE_PI_PROVIDER_CATALOG']) {
   const value = process.env[name]
   if (value) openArgs.push('--env', `${name}=${value}`)
 }

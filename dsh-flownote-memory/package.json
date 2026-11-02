@@ -1,0 +1,32 @@
+{
+  "name": "dsh-flownote-memory",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness bundle: expose Flownote memos and artifact tools through the local flownote-cli MCP server",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "cordis.patch.yml",
+    "launcher.mjs",
+    "memo-tool-schema.json",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "flownote",
+    "mcp",
+    "notes"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/text2future/flownote.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

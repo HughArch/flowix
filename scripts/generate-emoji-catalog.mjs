@@ -19,7 +19,7 @@ const require = createRequire(import.meta.url)
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outputPath = path.join(
   repoRoot,
-  'app/flowix-web/features/editor/extensions/callout/emoji-catalog.ts',
+  'app/flownote-web/features/editor/extensions/callout/emoji-catalog.ts',
 )
 
 function readData(relativePath) {

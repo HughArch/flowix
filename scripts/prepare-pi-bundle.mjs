@@ -65,7 +65,7 @@ for (const arch of arches) {
     let downloaded = false
     let lastError
     const mirror = `https://gh-proxy.com/${url}`
-    const downloadUrls = process.env.FLOWIX_PI_DOWNLOAD_MIRROR_FIRST === '1'
+    const downloadUrls = process.env.FLOWNOTE_PI_DOWNLOAD_MIRROR_FIRST === '1'
       ? [mirror, url]
       : [url, mirror]
     for (const candidate of downloadUrls) {

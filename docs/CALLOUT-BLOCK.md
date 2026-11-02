@@ -34,7 +34,7 @@ callout: {
   draggable: false,
   attrs: {
     icon: '💡',        // emoji 字符
-    color: 'gray',     // FlowixTextColor
+    color: 'gray',     // FlownoteTextColor
   },
 }
 ```
@@ -109,14 +109,14 @@ callout: {
 - ZWJ 组合表情（家庭、职业等）会自动缩小字号，避免在网格中与相邻表情重叠。
 - **搜索**：支持中英文名称与关键词，空格分隔的多个词按 AND 匹配；搜索跨全部分类，结果上限 300。
 - **旗帜使用本地 SVG**：Windows 的系统 emoji 字体不包含国家队旗帜，因此旗帜分类改用 Twemoji SVG（本地资源、按需加载），保证跨平台显示一致。资源见 `callout/flag-assets/`，许可与署名见 `callout/FLAG-ASSETS.md`（CC-BY 4.0）。
-- 9 色背景（复用 `FLOWIX_TEXT_COLORS` / `--flowix-text-*`）。
+- 9 色背景（复用 `FLOWNOTE_TEXT_COLORS` / `--flownote-text-*`）。
 
 数据通过动态 `import()` 懒加载（约 212 KB / 75 KB gzip 的独立 chunk），不进入启动包；首次打开浮层时加载。修改走一次 `setNodeMarkup`，一步撤销。浮层全局单例，点击外部 / Escape / 滚动会关闭。
 
 数据来源与再生成：
 
 - 源：`emojibase-data`（MIT），由 Unicode CLDR 注释生成，含中英文标签与关键词。
-- 生成：`npm run emoji:catalog` → `app/flowix-web/features/editor/extensions/callout/emoji-catalog.ts`。
+- 生成：`npm run emoji:catalog` → `app/flownote-web/features/editor/extensions/callout/emoji-catalog.ts`。
 - 旗帜图片：`npm run emoji:flags` → `callout/flag-assets/`（Twemoji，CC-BY 4.0）。
 - 升级 `emojibase-data` / `@twemoji/svg` 后重新执行对应脚本并提交生成文件。
 
@@ -150,11 +150,11 @@ callout: {
 ### CLI
 
 ```bash
-flowix callout list <id> --json
-flowix callout add <id> [--at <line>] [--icon <emoji>] [--color <color>] \
+flownote callout list <id> --json
+flownote callout add <id> [--at <line>] [--icon <emoji>] [--color <color>] \
   [--content <text> | --file <utf8.md> | --stdin] --json
-flowix callout set <id> --block <n> [--icon <emoji>] [--color <color>] --json
-flowix callout remove <id> --block <n> [--delete-content] --json
+flownote callout set <id> --block <n> [--icon <emoji>] [--color <color>] --json
+flownote callout remove <id> --block <n> [--delete-content] --json
 ```
 
 - `add` 默认 `💡 + orange`；内容来源三选一（`--content` / `--file` / `--stdin`），可省略。
@@ -184,7 +184,7 @@ flowix callout remove <id> --block <n> [--delete-content] --json
 | 行背景色 | 内部段落仍可单独设置行背景，与着重块背景叠加 |
 | 分栏 | 两者互相嵌套，扫描器按围栏长度平衡 |
 | 拖拽手柄 | 位置按编辑区左栏计算，不覆盖图标 |
-| 复制 / 粘贴 | `renderHTML` 输出 `div[data-flowix-callout]` + `data-icon/data-color` |
+| 复制 / 粘贴 | `renderHTML` 输出 `div[data-flownote-callout]` + `data-icon/data-color` |
 | Placeholder | 空段落沿用全局 Placeholder |
 
 ## 边界与风险
@@ -206,12 +206,12 @@ flowix callout remove <id> --block <n> [--delete-content] --json
 - Rust：`memo_file::callout` 单元测试、`callout_e2e.rs`、`mcp_e2e.rs` 的 structured callout 用例。
 
 ```bash
-npx vitest run app/flowix-web/features/editor/extensions/callout \
-  app/flowix-web/features/editor/extensions/columns/columns-markdown.test.ts \
-  app/flowix-web/features/editor/markdown-parser-regressions.test.ts
+npx vitest run app/flownote-web/features/editor/extensions/callout \
+  app/flownote-web/features/editor/extensions/columns/columns-markdown.test.ts \
+  app/flownote-web/features/editor/markdown-parser-regressions.test.ts
 
 cd app
-cargo test -p flowix-core callout::tests
-cargo test -p flowix-cli --test callout_e2e
-cargo test -p flowix-cli --test mcp_e2e structured_callout
+cargo test -p flownote-core callout::tests
+cargo test -p flownote-cli --test callout_e2e
+cargo test -p flownote-cli --test mcp_e2e structured_callout
 ```

@@ -102,13 +102,13 @@ being classified as corruption or replaced by an empty store.
 
 ## Status delivery and lifecycle
 
-`flowix:notebook-maintenance` publishes notebook ID, state, revision, optional
+`flownote:notebook-maintenance` publishes notebook ID, state, revision, optional
 count/path availability and failure text. `get_notebook_background_status` is the
 snapshot counterpart. The frontend reconciles on listener readiness/recovery and
 rejects older revisions and regressing same-revision events. List/panel loading
 and retry remain independent of global startup state.
 
-Media cleanup uses `flowix:media-maintenance` and
+Media cleanup uses `flownote:media-maintenance` and
 `get_notebook_media_maintenance_status`; the media library exposes a retry action
 for failed maintenance. Its revisions and state do not affect note-index status.
 

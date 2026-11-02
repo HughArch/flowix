@@ -266,7 +266,7 @@ describe('NativeDshAdapter thread launch', () => {
     await expect(adapter.executeCommand('session-1', '/plan off')).resolves.toMatchObject({ effects: { turn: 'none' } })
   })
 
-  it('returns the grouped plugin catalog shape expected by Flowix', () => {
+  it('returns the grouped plugin catalog shape expected by Flownote', () => {
     const adapter = new NativeDshAdapter({
       get: (name: string) => name === 'plugins' ? { list: () => ['dsh-appserver'] } : undefined,
     })
@@ -811,9 +811,9 @@ describe('NativeDshAdapter thread launch', () => {
       agents: { get: (id: string) => id === 'session-1' ? agent : undefined },
     })
 
-    await expect(adapter.steerTurn('session-1', 'continue with the next step', 'flowix-steer-1')).resolves.toBe(true)
+    await expect(adapter.steerTurn('session-1', 'continue with the next step', 'flownote-steer-1')).resolves.toBe(true)
     expect(steered).toMatchObject({
-      id: 'flowix-steer-1', role: 'user', source: { kind: 'user' },
+      id: 'flownote-steer-1', role: 'user', source: { kind: 'user' },
       content: [{ type: 'text', text: 'continue with the next step' }],
     })
   })

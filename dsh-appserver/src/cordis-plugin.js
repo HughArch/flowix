@@ -55,7 +55,7 @@ export default function dshAppServer(ctx, config = {}) {
   ctx.provide('dshAppServer', service)
   // Profile configuration/environment owns the stdio switch. Do not inject
   // the CLI-only cmdlineArgs service: embedded SDK runners do not provide it.
-  if (config.stdio || process.env.FLOWIX_DSH_APPSERVER_STDIO === '1') server.serveStdio()
+  if (config.stdio || process.env.FLOWNOTE_DSH_APPSERVER_STDIO === '1') server.serveStdio()
   return () => service.dispose()
 }
 dshAppServer.inject = inject

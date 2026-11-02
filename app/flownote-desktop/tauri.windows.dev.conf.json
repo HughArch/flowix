@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Flownote Dev",
+  "mainBinaryName": "Flownote Dev",
+  "identifier": "com.flownote-dev.app",
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["flownote-dev"] }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Flownote Dev",
+        "transparent": true,
+        "decorations": false,
+        "width": 1100,
+        "height": 720,
+        "minWidth": 420,
+        "minHeight": 600,
+        "visible": false
+      }
+    ]
+  }
+}

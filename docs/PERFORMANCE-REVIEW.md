@@ -1,7 +1,7 @@
-# Flowix 性能设计审查
+# Flownote 性能设计审查
 
 审查日期：2026-10-19
-范围：`app/flowix-web`（React 19 + TipTap + Zustand）、`app/flowix-desktop` / `app/flowix-core`（Tauri v2 + Rust）
+范围：`app/flownote-web`（React 19 + TipTap + Zustand）、`app/flownote-desktop` / `app/flownote-core`（Tauri v2 + Rust）
 方法：静态阅读 + 现有构建产物（`.build/web-dist`）度量。**未做运行时 profiling**，结论均附代码位置，可逐条复核。
 
 ## 0. 体感结论
@@ -212,8 +212,8 @@ live.current.setState(previous => previous.fullContent === content ? previous : 
 
 Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC handler），会直接冻结窗口。
 
-- `flowix-desktop/src/commands/file.rs:911` `pub fn get_file_tree(...)`（无 async）→ `:919 memo_tree_metadata_for_directory` → `:215 read_note_entries(&config.id)`。
-- `flowix-desktop/src/commands/memo/reads.rs:391` `pub fn search_path_notes(...)`（无 async）→ `:397 NoteService::search`。
+- `flownote-desktop/src/commands/file.rs:911` `pub fn get_file_tree(...)`（无 async）→ `:919 memo_tree_metadata_for_directory` → `:215 read_note_entries(&config.id)`。
+- `flownote-desktop/src/commands/memo/reads.rs:391` `pub fn search_path_notes(...)`（无 async）→ `:397 NoteService::search`。
 - `commands/file.rs:968` `fs::read_to_string`。
 
 影响：展开任意文件夹都要读整本笔记的元数据，`file.rs:227-235` 还对每篇笔记 `canonical_path()`（系统调用）；搜索同理。用户侧表现为“点一下文件夹整个界面定住”。
@@ -222,13 +222,13 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 
 ### 5.2 分页是「全目录扫描后截断」（P1）
 
-`flowix-desktop/src/commands/document_list.rs:296-368`：`fs::read_dir` 遍历整个目录 → 全量 `sort_by` → 再按 cursor/limit 切前 N 条。虽然已在 `spawn_blocking` 里，但每翻一页都重做一遍 readdir + stat + 排序，cursor 不减少任何工作量。
+`flownote-desktop/src/commands/document_list.rs:296-368`：`fs::read_dir` 遍历整个目录 → 全量 `sort_by` → 再按 cursor/limit 切前 N 条。虽然已在 `spawn_blocking` 里，但每翻一页都重做一遍 readdir + stat + 排序，cursor 不减少任何工作量。
 
 修法：目录级快照缓存（mtime 失效），或维护有序索引做真正的游标扫描。
 
 ### 5.3 索引查询每次新建 SQLite 连接并重跑 DDL（P1）
 
-`flowix-core/src/memo_file/note_index.rs:1039`（`note_index_is_ready`）与 `:1045`（`open_note_index_connection`）——一页查询两次判断；`:1784-1805` `Connection::open` + `PRAGMA` + 一长串 `CREATE TABLE IF NOT EXISTS` + `CREATE VIRTUAL TABLE IF NOT EXISTS`。
+`flownote-core/src/memo_file/note_index.rs:1039`（`note_index_is_ready`）与 `:1045`（`open_note_index_connection`）——一页查询两次判断；`:1784-1805` `Connection::open` + `PRAGMA` + 一长串 `CREATE TABLE IF NOT EXISTS` + `CREATE VIRTUAL TABLE IF NOT EXISTS`。
 
 影响：翻页/滚动的固定开销大于取 50 行本身。
 
@@ -236,7 +236,7 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 
 ### 5.4 保存每次 fsync + 重复全文读写（P2）
 
-`flowix-core/src/memo_file/file_io.rs:35` `temporary.as_file().sync_all()`；`note_index.rs:338 refresh_note_path` 里 `fs::read` + SHA256 + 新事务。
+`flownote-core/src/memo_file/file_io.rs:35` `temporary.as_file().sync_all()`；`note_index.rs:338 refresh_note_path` 里 `fs::read` + SHA256 + 新事务。
 
 修法：自动保存走合并写、去 fsync（退出/手动保存再 fsync）；索引更新进增量队列异步落库。
 
@@ -271,8 +271,8 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 
 | 位置 | 改动 |
 | --- | --- |
-| `flowix-desktop/src/commands/file.rs` | `get_file_tree` / `get_dir_children` / `read_file` 改 `async` + `spawn_blocking`，用 `AppHandle` 取状态 |
-| `flowix-desktop/src/commands/memo/reads.rs` | `search_path_notes` 同上 |
+| `flownote-desktop/src/commands/file.rs` | `get_file_tree` / `get_dir_children` / `read_file` 改 `async` + `spawn_blocking`，用 `AppHandle` 取状态 |
+| `flownote-desktop/src/commands/memo/reads.rs` | `search_path_notes` 同上 |
 | `features/shell/main-layout.tsx:284` | 全量订阅改 `useShallow`，只取 `status` / `error` |
 | `features/surface/document-list-view.tsx` | scroll / ResizeObserver 合并到 rAF 且值不变时 bail out；`excludedMediaPathSet` / `visibleItems` / `mediaColumns` 改 `useMemo` |
 | `features/editor/components/heading-outline-navigation.tsx` | `update` 改 200ms debounce，标题结果做 identity 比较后再 setState |
@@ -298,9 +298,9 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 
 - `tsc --noEmit`、`vite build`、bundle 预算通过；startup JS 1,481,666 raw / 457,367 gzip。该指标不是主列表运行时性能测量。
 - 前端相关 5 个测试文件共 58 tests 通过；覆盖 5k 条列表 DOM 数量、隐藏视口、滚动范围、交互行保活、分页追加，以及插入/删除时的滚动位置。
-- `flowix-core --lib`：345 tests 通过，包括新增的定向元数据查询、分批参数、无关字段损坏隔离、写锁下打开 schema 快路径、缺表补建、数据库替换和错误版本/归属检查。
-- `cargo check -p flowix-desktop`：通过（已有 warnings）。
-- 桌面目录回填定向测试已添加，但 `flowix-desktop --lib` 测试目标被既有 `commands/collection.rs` 测试夹具缺少 `CollectionType::WorkDocuments` match 分支阻断，无法执行；尚未做桌面窗口人工交互验收。
+- `flownote-core --lib`：345 tests 通过，包括新增的定向元数据查询、分批参数、无关字段损坏隔离、写锁下打开 schema 快路径、缺表补建、数据库替换和错误版本/归属检查。
+- `cargo check -p flownote-desktop`：通过（已有 warnings）。
+- 桌面目录回填定向测试已添加，但 `flownote-desktop --lib` 测试目标被既有 `commands/collection.rs` 测试夹具缺少 `CollectionType::WorkDocuments` match 分支阻断，无法执行；尚未做桌面窗口人工交互验收。
 
 本批仍保留：目录全量 readdir + 排序、索引每次建立连接、watcher 全文 hash 校验、编辑器插件全文扫描、保存链路、媒体库 masonry 窗口化和启动依赖拆分。
 
@@ -323,7 +323,7 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 - `tsc --noEmit`：0 error
 - 受影响的测试：`note-store` / `notebook-file-tree` / `memo-list-data-loader` / 编辑器组件，共 107 tests 全部通过
 - `vite build` + `scripts/check-web-bundle.mjs`：通过（startup JS 1,481,666 raw / 457,393 gzip）
-- `cargo check -p flowix-desktop`：通过
+- `cargo check -p flownote-desktop`：通过
 
 ### 第二批暂缓（后续进度见第三、四批）
 
@@ -364,7 +364,7 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 - **索引查询少开一次连接**：`read_note_entries`、`read_note_tree_metadata_for_paths`、`read_note_page` 现在在同一连接上检查 ready 状态并读取结果；不再先开连接检查、再为查询开第二个连接。其他读取与写入路径仍按调用创建连接。
 - **桌面测试夹具**：补齐 `CollectionType::WorkDocuments` 的测试匹配分支，使 desktop lib 定向用例可以编译运行。
 
-验证结果：`tsc --noEmit` 通过；相关前端测试 5 个文件、41 项通过；`vite build` 与 bundle 预算通过，startup JS 1,482,810 raw / 457,679 gzip；`cargo check -p flowix-desktop` 通过；desktop 目录分页测试 2 项和 watcher 合并测试 2 项通过；`flowix-core --lib` 最终 345 项通过。完整 core 首次运行有 1 项并发 SQLite 测试报 `database is locked`，隔离重跑通过，随后全套重跑通过。构建仍报告既有的 CSS `@import` 顺序、循环 chunk 和大 chunk 警告；本批未做真实媒体滚动、启动和输入延迟 profiling。
+验证结果：`tsc --noEmit` 通过；相关前端测试 5 个文件、41 项通过；`vite build` 与 bundle 预算通过，startup JS 1,482,810 raw / 457,679 gzip；`cargo check -p flownote-desktop` 通过；desktop 目录分页测试 2 项和 watcher 合并测试 2 项通过；`flownote-core --lib` 最终 345 项通过。完整 core 首次运行有 1 项并发 SQLite 测试报 `database is locked`，隔离重跑通过，随后全套重跑通过。构建仍报告既有的 CSS `@import` 顺序、循环 chunk 和大 chunk 警告；本批未做真实媒体滚动、启动和输入延迟 profiling。
 
 ### 第七批（置顶分页、启动状态等待与气泡菜单去重）
 
@@ -372,7 +372,7 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 - **启动状态长轮询**：前端移除每 250ms 一次的 `get_startup_status` 调用，改为先取快照，再等待后端 `Condvar` 状态变化，10 秒超时用于恢复连接后的快照同步。等待以旧快照做比较，不会漏掉快照与等待调用之间发生的状态变化。
 - **气泡菜单事务比较**：编辑器 transaction 仍计算当前格式和 `can()` 状态，但只有所选文本、格式激活态、按钮启用态或链接地址变化时才触发 React 更新；selection 消失时仍关闭高亮面板。
 
-验证：`npm run build`（含 `tsc`、`vite build` 和 bundle 预算）通过；startup JS 为 1,482,877 raw / 457,712 gzip。置顶分页与气泡菜单 2 个测试文件、7 项通过；置顶分页 hook 测试覆盖只取第一页、按需取下一页及返回缓存页；`flowix-desktop` 启动状态长轮询定向用例通过。构建仍提示 CSS `@import` 顺序、循环 chunk 和大 chunk；尚未做真实启动耗时、长笔记输入或多收藏滚动 profiling。
+验证：`npm run build`（含 `tsc`、`vite build` 和 bundle 预算）通过；startup JS 为 1,482,877 raw / 457,712 gzip。置顶分页与气泡菜单 2 个测试文件、7 项通过；置顶分页 hook 测试覆盖只取第一页、按需取下一页及返回缓存页；`flownote-desktop` 启动状态长轮询定向用例通过。构建仍提示 CSS `@import` 顺序、循环 chunk 和大 chunk；尚未做真实启动耗时、长笔记输入或多收藏滚动 profiling。
 
 ### 第八批（目录候选内存、watcher 正文快照与启动图复核）
 
@@ -381,7 +381,7 @@ Tauri v2 中 `#[tauri::command]` 不加 `async` 即在主线程执行（IPC hand
 - **应用保存复用正文**：原子写入确认成功后，把刚写入的正文直接传给索引刷新，不再立即从磁盘读回同一正文做 hash 与解析；冲突路径仍返回磁盘版本。
 - **启动依赖图**：绕过扩展 barrel 后重新测量，启动 JS 静态闭包为 1,180,859 raw / 363,418 gzip，较初始基线减少 94,462 B gzip。入口 CSS 仍为 452,174 raw / 64,922 gzip。
 
-验证：目录分页 3 tests、watcher manager 10 tests、note index 20 tests、保存回归 1 test 通过；`cargo check -p flowix-desktop` 与 `npm run build`（含 TypeScript 和 bundle 预算）通过。`git diff --check` 通过。相关大文件的 `rustfmt --check` 会要求大范围格式调整；未整文件格式化，以免引入无关重排。未做运行时 profiling。
+验证：目录分页 3 tests、watcher manager 10 tests、note index 20 tests、保存回归 1 test 通过；`cargo check -p flownote-desktop` 与 `npm run build`（含 TypeScript 和 bundle 预算）通过。`git diff --check` 通过。相关大文件的 `rustfmt --check` 会要求大范围格式调整；未整文件格式化，以免引入无关重排。未做运行时 profiling。
 
 ## 9. 当前仍然确认存在的问题（第八批后）
 

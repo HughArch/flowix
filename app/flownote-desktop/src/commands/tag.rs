@@ -1,0 +1,162 @@
+//! Tag IPC：从 memo index 的 YAML/正文标签并集派生标签列表，并在用户
+//! 显式重命名或删除标签时同时改写两个真实来源。
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
+
+use crate::lock_utils::read_lock;
+use crate::memo_events::{self, MemoEvent};
+use crate::watcher::runtime::mark_self_write_for;
+use flownote_core::memo_file::types::{DeleteTagReport, MoveTagReport};
+
+use crate::app::state::AppState;
+
+#[derive(Serialize)]
+pub struct GetAllTagsResponse {
+    pub tags: Vec<TagWithId>,
+}
+
+#[derive(Serialize)]
+pub struct TagWithId {
+    pub id: String,
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn get_all_tags(
+    notebook_id: Option<String>,
+    app: AppHandle,
+) -> Result<GetAllTagsResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<GetAllTagsResponse, String> {
+        let state = app.state::<AppState>();
+        let memo_file = read_lock(&state.memo_file, "memo_file");
+        let id = notebook_id.or_else(|| memo_file.current_notebook_id_value()).unwrap_or_default();
+        let tags = memo_file.derived_tags_for_notebook_id(Some(&id))
+            .map_err(|error| crate::app::notebook_background::query_error(state.inner(), &id, error))?;
+        Ok(GetAllTagsResponse {
+            tags: tags
+                .into_iter()
+                .map(|t| TagWithId {
+                    id: t.id,
+                    name: t.name,
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|error| format!("tag list task failed: {error}"))?
+}
+
+/// 移动 subtag: �?`old_path` 整棵子树重命�?(�?prefix 替换),
+/// 批量改写所有受影响 memo �?`.md` body + 同�? memo index�?///
+/// 返回 `MoveTagReport { affectedMemos, renamedTags }` —前�?拿到
+/// `renamedTags` 鍚庡彲绮剧‘鍒锋柊 dropdown / 鏍囩闈㈡澘缂撳瓨, 閬垮厤閲嶆柊鎷夊叏琛ㄣ€?
+#[tauri::command]
+pub fn move_memo_tag(
+    notebook_id: Option<String>,
+    old_path: String,
+    new_path: String,
+    state: State<AppState>,
+    app: AppHandle,
+) -> Result<MoveTagReport, String> {
+    // Collect changed note relative paths while the core callback runs under
+    // the read lock. Refresh search/cloud state and emit the aggregate event
+    // after releasing it.
+    let mut affected_relative_paths: Vec<String> = Vec::new();
+    let report = {
+        let memo_file = state
+            .memo_file
+            .read()
+            .map_err(|e| format!("memo_file read lock poisoned: {e}"))?;
+        memo_file
+            .move_memo_tag_locked_with_hooks(
+                notebook_id.as_deref(),
+                &old_path,
+                &new_path,
+                |path| mark_self_write_for(&app, path),
+                |path| affected_relative_paths.push(path.to_string()),
+            )
+            .map_err(|e| e.to_string())?
+    };
+
+    let sync_notebook_id = notebook_id.as_deref().unwrap_or("nb_default");
+    if !affected_relative_paths.is_empty() {
+        crate::fns_sync::schedule_notebook_sync(&app, sync_notebook_id);
+    }
+    memo_events::emit(
+        &app,
+        MemoEvent::TagsRenamed {
+            notebook_id: notebook_id.unwrap_or_else(|| "nb_default".to_string()),
+            renamed_tags: report.renamed_tags.clone(),
+            affected_relative_paths,
+        },
+    );
+    Ok(report)
+}
+
+// Delete tag: remove `tag_path` itself + all subtree tags (any depth)
+// from memo index + frontmatter/body tag sources. Event strategy is
+// symmetric -- one-shot emit `MemoEvent::TagsDeleted` (instead of
+// per-memo Updated).
+#[tauri::command]
+pub fn delete_memo_tag(
+    notebook_id: Option<String>,
+    tag_path: String,
+    state: State<AppState>,
+    app: AppHandle,
+) -> Result<DeleteTagReport, String> {
+    let mut affected_relative_paths: Vec<String> = Vec::new();
+    let report = {
+        let memo_file = state
+            .memo_file
+            .read()
+            .map_err(|e| format!("memo_file read lock poisoned: {e}"))?;
+        memo_file
+            .delete_memo_tag_locked_with_hooks(
+                notebook_id.as_deref(),
+                &tag_path,
+                |path| mark_self_write_for(&app, path),
+                |path| affected_relative_paths.push(path.to_string()),
+            )
+            .map_err(|e| e.to_string())?
+    };
+
+    let sync_notebook_id = notebook_id.as_deref().unwrap_or("nb_default");
+    if !affected_relative_paths.is_empty() {
+        crate::fns_sync::schedule_notebook_sync(&app, sync_notebook_id);
+    }
+    // 2) one-shot emit TagsDeleted to the frontend.
+    memo_events::emit(
+        &app,
+        MemoEvent::TagsDeleted {
+            notebook_id: notebook_id.unwrap_or_else(|| "nb_default".to_string()),
+            deleted_tags: report.deleted_tags.clone(),
+            affected_relative_paths,
+        },
+    );
+    Ok(report)
+}
+
+/// �?���?tag 树前缀计数: 每个 prefix (e.g. `�?��`, `�?��/湖南`) 对应
+/// 挂了"以�? prefix 起�?�?tag"的去�?memo 数。用于侧栏树节点�?/// 显示的数�?—必须�?memo �? 不能�?tag 数累�?(同一 memo 多个
+/// �?tag 在父 prefix 下只�?1)�?
+#[tauri::command]
+pub async fn get_tag_prefix_counts(
+    notebook_id: Option<String>,
+    app: AppHandle,
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let memo_file = state.memo_file.read().unwrap_or_else(|poisoned| {
+            tracing::error!("memo_file read lock poisoned, recovering");
+            poisoned.into_inner()
+        });
+        memo_file
+            .read_tag_prefix_counts_for_notebook_id(notebook_id.as_deref())
+            .map_err(|error| {
+                let id = notebook_id.clone().or_else(|| memo_file.current_notebook_id_value()).unwrap_or_default();
+                crate::app::notebook_background::query_error(state.inner(), &id, error)
+            })
+    })
+    .await
+    .map_err(|error| format!("tag count task failed: {error}"))?
+}

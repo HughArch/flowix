@@ -21,7 +21,7 @@ const chrome = process.env.CHROME_BIN ?? [
 ].find(existsSync);
 assert(fixtureOnly || chrome, 'Set CHROME_BIN to a Chromium browser, or use --fixture-only.');
 
-const folder = await mkdtemp(join(tmpdir(), 'flowix-tag-layout-'));
+const folder = await mkdtemp(join(tmpdir(), 'flownote-tag-layout-'));
 try {
   await build({
     absWorkingDir: root,
@@ -29,7 +29,7 @@ try {
     bundle: true,
     format: 'iife',
     platform: 'browser',
-    alias: { '@': resolve(root, 'app/flowix-web') },
+    alias: { '@': resolve(root, 'app/flownote-web') },
     loader: { '.woff2': 'file' },
     outfile: join(folder, 'probe.js'),
   });

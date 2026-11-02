@@ -1,0 +1,1233 @@
+//! Model Context Protocol stdio frontend for external Agents.
+//!
+//! The server intentionally exposes exactly one tool, `memo`. Its input is a
+//! restricted Flownote CLI command plus optional stdin content. Commands are parsed into
+//! argv and dispatched directly to the typed store layer; no system shell is spawned.
+
+use crate::{
+    background_store, callout_store, canvas_store, cli, columns_store, errors::CliError, fmt,
+    notecard_store, operation, output, path_store, plugin, store, toggle_store,
+};
+use serde_json::{json, Map, Value};
+use std::io::{BufRead, Write};
+
+pub const TOOL_NAME: &str = "memo";
+const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    LATEST_PROTOCOL_VERSION,
+];
+
+pub const TOOL_DESCRIPTION: &str = "Search and manage Flownote Markdown notes, inspect or edit Notion-style content columns, line background colors, Flowus-style callouts, collapsible toggle blocks and block-level note cards (embedded references to other notes with line/card/cardLarge layouts), create, inspect and edit .fanvas canvas boards (note cards, sticky notes, shapes, edges, frames), read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
+
+/// Run the MCP line-delimited JSON-RPC loop until stdin reaches EOF.
+pub fn run_mcp<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), CliError> {
+    for line in reader.lines() {
+        let line = line.map_err(CliError::Io)?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let request: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(error) => {
+                write_json_line(
+                    &mut writer,
+                    &rpc_error(Value::Null, -32700, format!("parse error: {error}")),
+                )?;
+                continue;
+            }
+        };
+
+        // MCP notifications do not receive responses.
+        let Some(id) = request.get("id").cloned() else {
+            continue;
+        };
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+
+        let response = match method {
+            "initialize" => rpc_result(id, initialize_result(&params)),
+            "ping" => rpc_result(id, json!({})),
+            "tools/list" => rpc_result(id, json!({"tools": [tool_definition()]})),
+            "tools/call" => match call_tool(&params) {
+                Ok(result) => rpc_result(id, result),
+                Err(error) => rpc_error(id, -32602, error.to_string()),
+            },
+            _ => rpc_error(id, -32601, format!("method not found: {method}")),
+        };
+        write_json_line(&mut writer, &response)?;
+    }
+    Ok(())
+}
+
+fn initialize_result(params: &Value) -> Value {
+    let requested = params.get("protocolVersion").and_then(Value::as_str);
+    let protocol_version = requested
+        .filter(|version| SUPPORTED_PROTOCOL_VERSIONS.contains(version))
+        .unwrap_or(LATEST_PROTOCOL_VERSION);
+    json!({
+        "protocolVersion": protocol_version,
+        "capabilities": {"tools": {"listChanged": false}},
+        "serverInfo": {
+            "name": "flownote-memo",
+            "title": "Flownote Memo",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+        "instructions": "Use the memo tool to search and manage Flownote Markdown memos, read collection datasets with collection.read by collectionId or notebook-relative path, create declared plugin artifacts such as mind maps, embed references to other notes inside a note with notecard.* actions (notecard.list, notecard.add, notecard.set, notecard.remove; never hand-write ::notecard lines), build and edit canvas boards with canvas.* actions (canvas.create, canvas.show, canvas.addCard, canvas.addShape, canvas.addEdge, canvas.addFrame, canvas.addNotes, canvas.remove), and inspect or restore cloud (FNS) note history with cloud.versions and cloud.restore."
+    })
+}
+
+fn tool_definition() -> Value {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../dsh-flownote-memory/memo-tool-schema.json"
+    ))
+    .expect("memo tool schema must be valid JSON");
+    json!({
+        "name": TOOL_NAME,
+        "title": "Flownote Memo",
+        "description": TOOL_DESCRIPTION,
+        "inputSchema": schema,
+        "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false}
+    })
+}
+
+fn call_tool(params: &Value) -> Result<Value, CliError> {
+    let object = params
+        .as_object()
+        .ok_or_else(|| CliError::Usage("tools/call params must be an object".into()))?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::Usage("tools/call params.name must be a string".into()))?;
+    if name != TOOL_NAME {
+        return Err(CliError::Usage(format!("unknown tool: `{name}`")));
+    }
+    let arguments = object
+        .get("arguments")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CliError::Usage("memo arguments must be an object".into()))?;
+    validate_argument_keys(arguments)?;
+    if arguments.contains_key("action") && arguments.contains_key("command") {
+        return Err(CliError::Usage(
+            "memo accepts either structured `action` or legacy `command`, not both".into(),
+        ));
+    }
+    let stdin = match arguments.get("stdin") {
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| CliError::Usage("memo.stdin must be a string".into()))?,
+        ),
+        None => None,
+    };
+
+    let execution = if arguments.contains_key("action") {
+        if stdin.is_some() {
+            return Err(CliError::Usage(
+                "structured actions use `content`; legacy `stdin` is not allowed".into(),
+            ));
+        }
+        operation::execute(parse_structured_operation(arguments)?)
+    } else {
+        let command = arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::Usage("memo requires `action` or legacy `command`".into()))?;
+        execute_command(command, stdin)
+    };
+
+    match execution {
+        Ok(data) => Ok(tool_result(data, false)),
+        Err(error) => {
+            let error_data = json!({
+                "ok": false,
+                "error": {
+                    "code": error_code(&error),
+                    "message": error.to_string()
+                }
+            });
+            Ok(tool_result(error_data, true))
+        }
+    }
+}
+
+fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError> {
+    const KEYS: &[&str] = &[
+        "action",
+        "id",
+        "notebook",
+        "address",
+        "query",
+        "content",
+        "old",
+        "limit",
+        "offset",
+        "dryRun",
+        "pluginId",
+        "sourceNote",
+        "producer",
+        "collectionId",
+        "path",
+        "tag",
+        "count",
+        "at",
+        "block",
+        "column",
+        "widths",
+        "line",
+        "color",
+        "icon",
+        "title",
+        "open",
+        "bg",
+        "clearBg",
+        "keepContent",
+        "layout",
+        "clearColor",
+        "clearText",
+        "historyId",
+        "name",
+        "folder",
+        "note",
+        "notes",
+        "text",
+        "shape",
+        "from",
+        "to",
+        "label",
+        "fill",
+        "stroke",
+        "ids",
+        "x",
+        "y",
+        "w",
+        "h",
+        "x2",
+        "y2",
+        "gapX",
+        "gapY",
+        "columns",
+        "command",
+        "stdin",
+    ];
+    if let Some(key) = arguments.keys().find(|key| !KEYS.contains(&key.as_str())) {
+        return Err(CliError::Usage(format!(
+            "memo does not accept argument `{key}`"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_structured_operation(
+    arguments: &Map<String, Value>,
+) -> Result<operation::FlownoteOperation, CliError> {
+    use operation::FlownoteOperation;
+    let action = required_string(arguments, "action")?;
+    let notebook = optional_string(arguments, "notebook")?;
+    let content = || required_string(arguments, "content");
+    let address = || required_string(arguments, "address");
+    let limit = integer(arguments, "limit", 50, 1, 200)?;
+    let offset = integer(arguments, "offset", 0, 0, usize::MAX)?;
+    let dry_run = boolean(arguments, "dryRun", false)?;
+    match action.as_str() {
+        "notebooks" => Ok(FlownoteOperation::Notebooks),
+        "collection.read" => {
+            let notebook = required_string(arguments, "notebook")?;
+            Ok(FlownoteOperation::CollectionRead {
+                notebook,
+                collection_id: optional_string(arguments, "collectionId")?,
+                path: optional_string(arguments, "path")?,
+            })
+        }
+        "list" => Ok(FlownoteOperation::List {
+            notebook,
+            limit,
+            offset,
+        }),
+        "tags" => Ok(FlownoteOperation::Tags { notebook }),
+        "show" => Ok(FlownoteOperation::Show { address: address()? }),
+        "search" => Ok(FlownoteOperation::Search {
+            query: required_string(arguments, "query")?,
+            notebook,
+            tag: optional_string(arguments, "tag")?,
+            limit,
+        }),
+        "create" => Ok(FlownoteOperation::Create {
+            notebook,
+            content: content()?,
+        }),
+        "edit" => Ok(FlownoteOperation::Edit {
+            address: address()?,
+            old: required_string(arguments, "old")?,
+            replacement: content()?,
+            dry_run,
+        }),
+        "write" => Ok(FlownoteOperation::Write {
+            address: address()?,
+            content: content()?,
+        }),
+        "delete" => Ok(FlownoteOperation::Delete { address: address()? }),
+        "cloud.versions" => Ok(FlownoteOperation::CloudVersions {
+            notebook,
+            path: required_string(arguments, "path")?,
+            page: integer(arguments, "page", 1, 1, 1000)? as u32,
+        }),
+        "cloud.restore" => Ok(FlownoteOperation::CloudRestore {
+            notebook,
+            path: required_string(arguments, "path")?,
+            history_id: required_integer(arguments, "historyId")?,
+        }),
+        "artifact.list" => Ok(FlownoteOperation::ArtifactList),
+        "artifact.describe" => Ok(FlownoteOperation::ArtifactDescribe {
+            plugin_id: required_string(arguments, "pluginId")?,
+        }),
+        "artifact.create" => Ok(FlownoteOperation::ArtifactCreate {
+            plugin_id: required_string(arguments, "pluginId")?,
+            notebook,
+            source_note: optional_string(arguments, "sourceNote")?,
+            producer: optional_string(arguments, "producer")?.unwrap_or_else(|| "agent-mcp".into()),
+            content: content()?,
+        }),
+        "columns.list" => Ok(FlownoteOperation::ColumnsList {
+            address: address()?,
+        }),
+        "columns.add" => Ok(FlownoteOperation::ColumnsAdd {
+            address: address()?,
+            count: integer(arguments, "count", 2, 2, 5)?,
+            at: optional_integer(arguments, "at")?,
+        }),
+        "columns.remove" => Ok(FlownoteOperation::ColumnsRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            column: integer(arguments, "column", 1, 1, usize::MAX)?,
+        }),
+        "columns.width" => Ok(FlownoteOperation::ColumnsWidth {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            widths: integer_array(arguments, "widths")?,
+        }),
+        "background.list" => Ok(FlownoteOperation::BackgroundList {
+            address: address()?,
+        }),
+        "background.set" => Ok(FlownoteOperation::BackgroundSet {
+            address: address()?,
+            line: integer(arguments, "line", 1, 1, usize::MAX)?,
+            color: required_string(arguments, "color")?,
+        }),
+        "background.clear" => Ok(FlownoteOperation::BackgroundClear {
+            address: address()?,
+            line: integer(arguments, "line", 1, 1, usize::MAX)?,
+        }),
+        "callout.list" => Ok(FlownoteOperation::CalloutList {
+            address: address()?,
+        }),
+        "callout.add" => Ok(FlownoteOperation::CalloutAdd {
+            address: address()?,
+            at: optional_integer(arguments, "at")?,
+            icon: optional_string(arguments, "icon")?,
+            color: optional_string(arguments, "color")?,
+            content: optional_string(arguments, "content")?.unwrap_or_default(),
+        }),
+        "callout.set" => Ok(FlownoteOperation::CalloutSet {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            icon: optional_string(arguments, "icon")?,
+            color: optional_string(arguments, "color")?,
+        }),
+        "callout.remove" => Ok(FlownoteOperation::CalloutRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            keep_content: boolean(arguments, "keepContent", true)?,
+        }),
+        "toggle.list" => Ok(FlownoteOperation::ToggleList {
+            address: address()?,
+        }),
+        "toggle.add" => Ok(FlownoteOperation::ToggleAdd {
+            address: address()?,
+            at: optional_integer(arguments, "at")?,
+            title: optional_string(arguments, "title")?.unwrap_or_default(),
+            content: optional_string(arguments, "content")?.unwrap_or_default(),
+            open: optional_boolean(arguments, "open")?.unwrap_or(true),
+            bg: optional_string(arguments, "bg")?,
+        }),
+        "toggle.set" => Ok(FlownoteOperation::ToggleSet {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            title: optional_string(arguments, "title")?,
+            content: optional_string(arguments, "content")?,
+            open: optional_boolean(arguments, "open")?,
+            bg: optional_string(arguments, "bg")?,
+            clear_bg: boolean(arguments, "clearBg", false)?,
+        }),
+        "toggle.remove" => Ok(FlownoteOperation::ToggleRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            keep_content: boolean(arguments, "keepContent", true)?,
+        }),
+        "notecard.list" => Ok(FlownoteOperation::NotecardList {
+            address: address()?,
+        }),
+        "notecard.add" => Ok(FlownoteOperation::NotecardAdd {
+            address: address()?,
+            note: required_string(arguments, "note")?,
+            at: optional_integer(arguments, "at")?,
+            layout: optional_string(arguments, "layout")?,
+            color: optional_string(arguments, "color")?,
+            text: optional_string(arguments, "text")?,
+            title: optional_string(arguments, "title")?,
+        }),
+        "notecard.set" => Ok(FlownoteOperation::NotecardSet {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            layout: optional_string(arguments, "layout")?,
+            title: optional_string(arguments, "title")?,
+            color: optional_string(arguments, "color")?,
+            clear_color: boolean(arguments, "clearColor", false)?,
+            text: optional_string(arguments, "text")?,
+            clear_text: boolean(arguments, "clearText", false)?,
+        }),
+        "notecard.remove" => Ok(FlownoteOperation::NotecardRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+        }),
+        "canvas.create" => Ok(FlownoteOperation::CanvasCreate {
+            notebook,
+            name: optional_string(arguments, "name")?
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Untitled".into()),
+            folder: optional_string(arguments, "folder")?,
+        }),
+        "canvas.show" => Ok(FlownoteOperation::CanvasShow { address: address()? }),
+        "canvas.addCard" => Ok(FlownoteOperation::CanvasAddCard {
+            address: address()?,
+            note: optional_string(arguments, "note")?,
+            text: optional_string(arguments, "text")?,
+            color: optional_string(arguments, "color")?,
+            title: optional_string(arguments, "title")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+        }),
+        "canvas.addShape" => Ok(FlownoteOperation::CanvasAddShape {
+            address: address()?,
+            shape: required_string(arguments, "shape")?,
+            text: optional_string(arguments, "text")?,
+            fill: optional_string(arguments, "fill")?,
+            stroke: optional_string(arguments, "stroke")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+            x2: optional_number(arguments, "x2")?,
+            y2: optional_number(arguments, "y2")?,
+        }),
+        "canvas.addEdge" => Ok(FlownoteOperation::CanvasAddEdge {
+            address: address()?,
+            from: required_string(arguments, "from")?,
+            to: required_string(arguments, "to")?,
+            label: optional_string(arguments, "label")?,
+        }),
+        "canvas.addFrame" => Ok(FlownoteOperation::CanvasAddFrame {
+            address: address()?,
+            title: optional_string(arguments, "title")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+        }),
+        "canvas.addNotes" => Ok(FlownoteOperation::CanvasAddNotes {
+            address: address()?,
+            notes: {
+                let values = arguments
+                    .get("notes")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        CliError::Usage("memo.notes must be an array of note addresses".into())
+                    })?;
+                values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .filter(|note| !note.trim().is_empty())
+                            .ok_or_else(|| {
+                                CliError::Usage(
+                                    "memo.notes must contain note address strings".into(),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            },
+            columns: optional_integer(arguments, "columns")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            gap_x: optional_number(arguments, "gapX")?,
+            gap_y: optional_number(arguments, "gapY")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+        }),
+        "canvas.updateElement" => Ok(FlownoteOperation::CanvasUpdate {
+            address: address()?,
+            element: required_string(arguments, "id")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+            x2: optional_number(arguments, "x2")?,
+            y2: optional_number(arguments, "y2")?,
+            text: optional_string(arguments, "text")?,
+            color: optional_string(arguments, "color")?,
+            fill: optional_string(arguments, "fill")?,
+            stroke: optional_string(arguments, "stroke")?,
+            label: optional_string(arguments, "label")?,
+            from: optional_string(arguments, "from")?,
+            to: optional_string(arguments, "to")?,
+            title: optional_string(arguments, "title")?,
+        }),
+        "canvas.remove" => {
+            let ids = arguments
+                .get("ids")
+                .and_then(Value::as_array)
+                .ok_or_else(|| CliError::Usage("memo.ids must be an array of element ids".into()))?;
+            let ids = ids
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .filter(|id| !id.trim().is_empty())
+                        .ok_or_else(|| {
+                            CliError::Usage("memo.ids must contain element id strings".into())
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(FlownoteOperation::CanvasRemove { address: address()?, ids })
+        }
+        _ => Err(CliError::Usage(format!("unknown memo action: `{action}`"))),
+    }
+}
+
+fn required_string(arguments: &Map<String, Value>, key: &str) -> Result<String, CliError> {
+    optional_string(arguments, key)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a non-empty string")))
+}
+
+fn optional_string(arguments: &Map<String, Value>, key: &str) -> Result<Option<String>, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a string")))
+        })
+        .transpose()
+}
+
+fn required_integer(arguments: &Map<String, Value>, key: &str) -> Result<i64, CliError> {
+    arguments
+        .get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| CliError::Usage(format!("memo.{key} is required and must be an integer")))
+}
+
+fn integer(
+    arguments: &Map<String, Value>,
+    key: &str,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> Result<usize, CliError> {
+    let value = match arguments.get(key) {
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| CliError::Usage(format!("memo.{key} must be an integer")))?
+            as usize,
+        None => default,
+    };
+    if value < min || value > max {
+        return Err(CliError::Usage(format!(
+            "memo.{key} must be between {min} and {max}"
+        )));
+    }
+    Ok(value)
+}
+
+fn optional_integer(arguments: &Map<String, Value>, key: &str) -> Result<Option<usize>, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|number| number as usize)
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be an integer")))
+        })
+        .transpose()
+}
+
+fn optional_number(arguments: &Map<String, Value>, key: &str) -> Result<Option<f64>, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a finite number")))
+        })
+        .transpose()
+}
+
+fn integer_array(arguments: &Map<String, Value>, key: &str) -> Result<Vec<u32>, CliError> {
+    let values = arguments
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::Usage(format!("memo.{key} must be an array of integers")))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|number| u32::try_from(number).ok())
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must contain integers")))
+        })
+        .collect()
+}
+
+fn boolean(arguments: &Map<String, Value>, key: &str, default: bool) -> Result<bool, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a boolean")))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
+
+fn optional_boolean(arguments: &Map<String, Value>, key: &str) -> Result<Option<bool>, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a boolean")))
+        })
+        .transpose()
+}
+
+fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError> {
+    reject_shell_syntax(command)?;
+    let args = shell_words::split(command)
+        .map_err(|error| CliError::Usage(format!("invalid command quoting: {error}")))?;
+    if args.is_empty() {
+        return Err(CliError::Usage("memo.command cannot be empty".into()));
+    }
+    if args[0] == "flownote" || args[0] == "flownote-cli" {
+        return Err(CliError::Usage(
+            "omit the leading `flownote`; pass only the subcommand".into(),
+        ));
+    }
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "help" | "--help" | "-h" | "--version" | "-V"))
+    {
+        return Err(CliError::Usage(
+            "help and version commands are not available through memo".into(),
+        ));
+    }
+
+    let parsed = cli::parse(&args)?.ok_or_else(|| CliError::Usage("missing command".into()))?;
+    match parsed {
+        cli::Cli::Notebooks { .. } => {
+            reject_stdin(stdin)?;
+            let (configs, selected_notebook_id) = store::notebooks_list_data()?;
+            let counts = store::notebook_note_counts(&configs)?;
+            let tag_counts = store::notebook_tag_counts(&configs)?;
+            Ok(fmt::notebooks_to_json(
+                &configs,
+                &counts,
+                &tag_counts,
+                selected_notebook_id.as_deref(),
+            ))
+        }
+        cli::Cli::List { notebook, .. } => {
+            reject_stdin(stdin)?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            Ok(path_store::list(&notebook)?["notes"].clone())
+        }
+        cli::Cli::Tags { notebook, .. } => {
+            reject_stdin(stdin)?;
+            store::notebook_tags(notebook.as_deref())
+        }
+        cli::Cli::Show { id, .. } => {
+            reject_stdin(stdin)?;
+            path_store::show(&id)
+        }
+        cli::Cli::Create { notebook, file, .. } => {
+            if file.is_some() {
+                return Err(CliError::Usage(
+                    "MCP cannot read client-local --file paths; use structured `content`".into(),
+                ));
+            }
+            let body = require_stdin(stdin, "create")?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            path_store::create(&notebook, body)
+        }
+        cli::Cli::Delete { id, .. } => {
+            reject_stdin(stdin)?;
+            path_store::delete(&id)
+        }
+        cli::Cli::CollectionRead { notebook, collection_id, path, .. } => {
+            reject_stdin(stdin)?;
+            operation::execute(operation::FlownoteOperation::CollectionRead {
+                notebook, collection_id, path,
+            })
+        }
+        cli::Cli::Search {
+            query,
+            notebook,
+            tag,
+            limit,
+            ..
+        } => {
+            reject_stdin(stdin)?;
+            path_store::search(&query, notebook.as_deref(), tag.as_deref(), limit)
+        }
+        cli::Cli::Edit {
+            id,
+            old,
+            new,
+            new_from_stdin,
+            new_file,
+            dry_run,
+            ..
+        } => {
+            if new_file.is_some() {
+                return Err(CliError::Usage(
+                    "MCP cannot read client-local --new-file paths; use structured `content`"
+                        .into(),
+                ));
+            }
+            let old = old.ok_or_else(|| CliError::Usage("edit requires --old <text>".into()))?;
+            let new = if new_from_stdin {
+                require_stdin(stdin, "edit --new-stdin")?.to_string()
+            } else {
+                reject_stdin(stdin)?;
+                new.ok_or_else(|| {
+                    CliError::Usage("edit requires --new <text> or --new-stdin".into())
+                })?
+            };
+            path_store::edit(&id, &old, &new, dry_run)
+        }
+        cli::Cli::Write { id, file, .. } => {
+            if file.is_some() {
+                return Err(CliError::Usage(
+                    "MCP cannot read client-local --file paths; use structured `content`".into(),
+                ));
+            }
+            let body = require_stdin(stdin, "write")?;
+            path_store::write(&id, body)
+        }
+        cli::Cli::CloudVersions { notebook, path, page, .. } => {
+            reject_stdin(stdin)?;
+            let paths = crate::paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            crate::cloud::list(&paths, &notebook, &path, page)
+        }
+        cli::Cli::CloudRestore { notebook, path, history, .. } => {
+            reject_stdin(stdin)?;
+            let paths = crate::paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            crate::cloud::restore(&paths, &notebook, &path, history)
+        }
+        cli::Cli::PluginList { .. } => {
+            reject_stdin(stdin)?;
+            output::to_json_value(&plugin::list_data())
+        }
+        cli::Cli::PluginDescribe { plugin_id, .. } => {
+            reject_stdin(stdin)?;
+            output::to_json_value(&plugin::describe_data(&plugin_id)?)
+        }
+        cli::Cli::PluginCreate {
+            plugin_id,
+            notebook,
+            source_note,
+            producer,
+            ..
+        } => {
+            let content = require_stdin(stdin, "plugin create")?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            output::to_json_value(&plugin::create_data(
+                &plugin_id,
+                &notebook,
+                source_note.as_deref(),
+                &producer,
+                content,
+            )?)
+        }
+        cli::Cli::Columns { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::ColumnsCommand::List { id } => columns_store::list(&id),
+                cli::ColumnsCommand::Add { id, count, at } => {
+                    columns_store::add(&id, count, at)
+                }
+                cli::ColumnsCommand::Remove {
+                    id,
+                    block,
+                    column,
+                } => columns_store::remove(&id, block, column),
+                cli::ColumnsCommand::Width { id, block, widths } => {
+                    columns_store::set_widths(&id, block, &widths)
+                }
+            }
+        }
+        cli::Cli::Background { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::BackgroundCommand::List { id } => background_store::list(&id),
+                cli::BackgroundCommand::Set { id, line, color } => {
+                    background_store::set(&id, line, &color)
+                }
+                cli::BackgroundCommand::Clear { id, line } => {
+                    background_store::clear(&id, line)
+                }
+            }
+        }
+        cli::Cli::Callout { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::CalloutCommand::List { id } => callout_store::list(&id),
+                cli::CalloutCommand::Add {
+                    id,
+                    at,
+                    icon,
+                    color,
+                    content,
+                    file,
+                    stdin: read_stdin,
+                } => {
+                    if file.is_some() || read_stdin {
+                        return Err(CliError::Usage(
+                            "callout add through memo accepts --content only".into(),
+                        ));
+                    }
+                    callout_store::add(
+                        &id,
+                        at,
+                        icon.as_deref(),
+                        color.as_deref(),
+                        content.as_deref().unwrap_or_default(),
+                    )
+                }
+                cli::CalloutCommand::Set {
+                    id,
+                    block,
+                    icon,
+                    color,
+                } => callout_store::set(&id, block, icon.as_deref(), color.as_deref()),
+                cli::CalloutCommand::Remove {
+                    id,
+                    block,
+                    delete_content,
+                } => callout_store::remove(&id, block, !delete_content),
+            }
+        }
+        cli::Cli::Toggle { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::ToggleCommand::List { id } => toggle_store::list(&id),
+                cli::ToggleCommand::Add {
+                    id,
+                    at,
+                    title,
+                    content,
+                    file,
+                    stdin: read_stdin,
+                    open,
+                    bg,
+                } => {
+                    if file.is_some() || read_stdin {
+                        return Err(CliError::Usage(
+                            "toggle add through memo accepts --content only".into(),
+                        ));
+                    }
+                    toggle_store::add(
+                        &id,
+                        at,
+                        title.as_deref().unwrap_or_default(),
+                        content.as_deref().unwrap_or_default(),
+                        open,
+                        bg.as_deref(),
+                    )
+                }
+                cli::ToggleCommand::Set {
+                    id,
+                    block,
+                    title,
+                    content,
+                    file,
+                    stdin: read_stdin,
+                    open,
+                    bg,
+                    clear_bg,
+                } => {
+                    if file.is_some() || read_stdin {
+                        return Err(CliError::Usage(
+                            "toggle set through memo accepts --content only".into(),
+                        ));
+                    }
+                    toggle_store::set(
+                        &id,
+                        block,
+                        title.as_deref(),
+                        content.as_deref(),
+                        open,
+                        bg.as_deref(),
+                        clear_bg,
+                    )
+                }
+                cli::ToggleCommand::Remove {
+                    id,
+                    block,
+                    delete_content,
+                } => toggle_store::remove(&id, block, !delete_content),
+            }
+        }
+        cli::Cli::Notecard { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::NotecardCommand::List { id } => notecard_store::list(&id),
+                cli::NotecardCommand::Add {
+                    id,
+                    note,
+                    at,
+                    layout,
+                    color,
+                    text,
+                    title,
+                } => notecard_store::add(
+                    &id,
+                    &note,
+                    at,
+                    layout.as_deref(),
+                    color.as_deref(),
+                    text.as_deref(),
+                    title.as_deref(),
+                ),
+                cli::NotecardCommand::Set {
+                    id,
+                    block,
+                    layout,
+                    title,
+                    color,
+                    clear_color,
+                    text,
+                    clear_text,
+                } => notecard_store::set(
+                    &id,
+                    block,
+                    layout.as_deref(),
+                    title.as_deref(),
+                    color.as_deref(),
+                    clear_color,
+                    text.as_deref(),
+                    clear_text,
+                ),
+                cli::NotecardCommand::Remove { id, block } => notecard_store::remove(&id, block),
+            }
+        }
+        cli::Cli::Canvas { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::CanvasCommand::Create {
+                    notebook,
+                    name,
+                    folder,
+                } => canvas_store::create(
+                    notebook.as_deref(),
+                    name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or("Untitled"),
+                    folder.as_deref(),
+                ),
+                cli::CanvasCommand::Show { id } => canvas_store::show(&id),
+                cli::CanvasCommand::AddCard {
+                    id,
+                    note,
+                    text,
+                    color,
+                    title,
+                    x,
+                    y,
+                    w,
+                    h,
+                } => canvas_store::add_card(
+                    &id,
+                    note.as_deref(),
+                    text.as_deref(),
+                    color.as_deref(),
+                    title.as_deref(),
+                    canvas_store::Placement { x, y, w, h },
+                ),
+                cli::CanvasCommand::AddShape {
+                    id,
+                    shape,
+                    text,
+                    fill,
+                    stroke,
+                    x,
+                    y,
+                    w,
+                    h,
+                    x2,
+                    y2,
+                } => canvas_store::add_shape(
+                    &id,
+                    canvas_store::ShapeArgs {
+                        shape: &shape,
+                        text: text.as_deref(),
+                        fill: fill.as_deref(),
+                        stroke: stroke.as_deref(),
+                        placement: canvas_store::Placement { x, y, w, h },
+                        x2,
+                        y2,
+                    },
+                ),
+                cli::CanvasCommand::AddEdge {
+                    id,
+                    from,
+                    to,
+                    label,
+                } => canvas_store::add_edge(&id, &from, &to, label.as_deref()),
+                cli::CanvasCommand::AddFrame {
+                    id,
+                    title,
+                    x,
+                    y,
+                    w,
+                    h,
+                } => canvas_store::add_frame(
+                    &id,
+                    title.as_deref(),
+                    canvas_store::Placement { x, y, w, h },
+                ),
+                cli::CanvasCommand::AddNotes {
+                    id,
+                    notes,
+                    columns,
+                    x,
+                    y,
+                    gap_x,
+                    gap_y,
+                    w,
+                    h,
+                } => canvas_store::add_notes(
+                    &id,
+                    &notes,
+                    flownote_core::canvas::GridPlan {
+                        columns: columns.unwrap_or(3),
+                        gap_x: gap_x.unwrap_or(flownote_core::canvas::AUTO_PLACE_GAP),
+                        gap_y: gap_y.unwrap_or(flownote_core::canvas::AUTO_PLACE_GAP),
+                        w,
+                        h,
+                        start: x.zip(y),
+                    },
+                ),
+                cli::CanvasCommand::Remove { id, ids } => canvas_store::remove(&id, &ids),
+                cli::CanvasCommand::Update {
+                    id,
+                    element,
+                    x,
+                    y,
+                    w,
+                    h,
+                    x2,
+                    y2,
+                    text,
+                    color,
+                    fill,
+                    stroke,
+                    label,
+                    from,
+                    to,
+                    title,
+                } => canvas_store::update(
+                    &id,
+                    &element,
+                    &canvas_store::UpdateArgs {
+                        x,
+                        y,
+                        w,
+                        h,
+                        x2,
+                        y2,
+                        text: text.as_deref(),
+                        color: color.as_deref(),
+                        fill: fill.as_deref(),
+                        stroke: stroke.as_deref(),
+                        label: label.as_deref(),
+                        from: from.as_deref(),
+                        to: to.as_deref(),
+                        title: title.as_deref(),
+                    },
+                ),
+            }
+        }
+        cli::Cli::Version | cli::Cli::Completion { .. } | cli::Cli::Mcp => Err(CliError::Usage(
+            "command is not available through memo".into(),
+        )),
+    }
+}
+
+fn reject_shell_syntax(command: &str) -> Result<(), CliError> {
+    const FORBIDDEN: &[&str] = &["|", ";", "&&", ">", "<", "`", "$(", "${"];
+    if let Some(operator) = FORBIDDEN
+        .iter()
+        .find(|operator| command.contains(**operator))
+    {
+        return Err(CliError::Usage(format!(
+            "shell syntax `{operator}` is not allowed"
+        )));
+    }
+    Ok(())
+}
+
+fn require_stdin<'a>(stdin: Option<&'a str>, command: &str) -> Result<&'a str, CliError> {
+    let value = stdin.ok_or_else(|| CliError::Usage(format!("{command} requires `stdin`")))?;
+    if value.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "{command} requires non-empty `stdin`"
+        )));
+    }
+    Ok(value)
+}
+
+fn reject_stdin(stdin: Option<&str>) -> Result<(), CliError> {
+    if stdin.is_some() {
+        Err(CliError::Usage(
+            "stdin is only allowed for create, write, or edit --new-stdin".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn tool_result(data: Value, is_error: bool) -> Value {
+    let text = if is_error {
+        data.pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("Flownote operation failed")
+            .to_string()
+    } else {
+        let action = data
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("completed");
+        let id = data
+            .get("address")
+            .and_then(Value::as_str)
+            .map(|id| format!(" ({id})"))
+            .unwrap_or_default();
+        format!("Flownote {action}{id}")
+    };
+    json!({
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": data,
+        "isError": is_error
+    })
+}
+
+fn error_code(error: &CliError) -> &'static str {
+    match error {
+        CliError::Usage(_) => "INVALID_COMMAND",
+        CliError::NotFound(_) => "NOT_FOUND",
+        CliError::Io(_) => "IO_ERROR",
+        CliError::Conflict(_) => "CONFLICT",
+        CliError::Other(_) => "EXECUTION_ERROR",
+    }
+}
+
+fn rpc_result(id: Value, result: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+fn rpc_error(id: Value, code: i32, message: String) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+fn write_json_line<W: Write>(writer: &mut W, value: &Value) -> Result<(), CliError> {
+    serde_json::to_writer(&mut *writer, value)
+        .map_err(|error| CliError::Other(format!("json write: {error}")))?;
+    writer.write_all(b"\n").map_err(CliError::Io)?;
+    writer.flush().map_err(CliError::Io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn run(input: &str) -> Vec<Value> {
+        let mut output = Vec::new();
+        run_mcp(Cursor::new(input.as_bytes()), &mut output).unwrap();
+        String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn lists_exactly_one_tool_with_command_rules() {
+        let responses = run(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#);
+        let tools = responses[0]["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], TOOL_NAME);
+        assert!(tools[0]["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action == "create"));
+        assert!(tools[0]["inputSchema"]["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action == "artifact.create"));
+        assert!(tools[0]["inputSchema"]["properties"]["tag"].is_object());
+        assert_eq!(
+            tools[0]["inputSchema"]["anyOf"],
+            json!([{"required":["action"]},{"required":["command"]}])
+        );
+    }
+
+    #[test]
+    fn rejects_shell_syntax_without_executing_it() {
+        for command in ["show abc; rm -rf ~", "show abc | cat", "show $(whoami)"] {
+            let error = execute_command(command, None).unwrap_err();
+            assert!(matches!(error, CliError::Usage(_)));
+            assert!(error.to_string().contains("shell syntax"));
+        }
+    }
+
+    #[test]
+    fn validates_stdin_contract() {
+        assert!(require_stdin(None, "create").is_err());
+        assert!(require_stdin(Some("  "), "write").is_err());
+        assert!(reject_stdin(Some("unexpected")).is_err());
+        assert_eq!(require_stdin(Some("# note"), "create").unwrap(), "# note");
+    }
+}

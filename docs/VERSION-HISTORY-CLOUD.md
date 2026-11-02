@@ -6,7 +6,7 @@
 
 ## 1. 背景与产品决策
 
-Flowix 目前文档右上角 `...` 菜单只有一个「历史版本」入口，读的是**本地归档**（`<notebook>/.flowix/archives/`）。FNS 服务端已有完整的笔记历史体系（`note_history` 表 + 3 条 REST API），Flowix 完全没有消费。
+Flownote 目前文档右上角 `...` 菜单只有一个「历史版本」入口，读的是**本地归档**（`<notebook>/.flownote/archives/`）。FNS 服务端已有完整的笔记历史体系（`note_history` 表 + 3 条 REST API），Flownote 完全没有消费。
 
 已拍板的产品决策：
 
@@ -16,7 +16,7 @@ Flowix 目前文档右上角 `...` 菜单只有一个「历史版本」入口，
 
 为什么云端值得做（补充动机）：
 
-- 本地归档**不参与 FNS 同步**（`flowix-fns/src/fs_store.rs` `SKIPPED_DIRS` 含 `.flowix`），是纯设备本地的——桌面与移动端归档列表天然不同，云端历史是唯一的跨设备共享时间线。
+- 本地归档**不参与 FNS 同步**（`flownote-fns/src/fs_store.rs` `SKIPPED_DIRS` 含 `.flownote`），是纯设备本地的——桌面与移动端归档列表天然不同，云端历史是唯一的跨设备共享时间线。
 - 移动端归档在 app 私有目录，卸载/清数据即失；云端历史是移动端的灾难恢复层。
 - 云端每条记录带 `clientName/clientType/clientVersion`，能回答「这条改动是哪台设备改的」。
 - FNS 每笔记默认保留 100 版（`HistoryKeepVersions`，0=无限），比本地 20 版上限多。
@@ -27,7 +27,7 @@ Flowix 目前文档右上角 `...` 菜单只有一个「历史版本」入口，
 
 | 项 | 现状 |
 |---|---|
-| 存储 | `<notebook>/.flowix/archives/<sha256(path)>/{manifest.json, v_<ts>_<nanoid6>.md}` |
+| 存储 | `<notebook>/.flownote/archives/<sha256(path)>/{manifest.json, v_<ts>_<nanoid6>.md}` |
 | 入口 | `document-titlebar-actions.tsx` → `VersionHistorySubmenu` |
 | IPC | `list_path_versions` / `create_path_version` / `restore_path_version` |
 | 来源 | `auto`（1h 节流）/ `manual`（保存归档）/ `restore_backup`（恢复自保）/ `cloud_conflict` |
@@ -53,7 +53,7 @@ Flowix 目前文档右上角 `...` 菜单只有一个「历史版本」入口，
 {"code":1,"status":true,"data":{
   "list":[{
     "id":98,"noteId":18,"vaultId":1,"path":"Kimi K3.1 Pro 模型介绍.md",
-    "clientName":"Flowix","clientType":"flowix","clientVersion":"1.5.11",
+    "clientName":"Flownote","clientType":"flownote","clientVersion":"1.5.11",
     "version":4,"createdAt":"2026-10-25 23:20:06"}],
   "pager":{"page":1,"pageSize":10,"totalRows":4}}}
 ```
@@ -64,7 +64,7 @@ Flowix 目前文档右上角 `...` 菜单只有一个「历史版本」入口，
 {"code":1,"status":true,"data":{
   "id":96,"noteId":18,"path":"...","content":"<修改前快照>",
   "diffs":[{"Type":0,"Text":"..."},{"Type":1,"Text":"..."}],
-  "clientName":"Flowix","clientType":"flowix","clientVersion":"1.5.11",
+  "clientName":"Flownote","clientType":"flownote","clientVersion":"1.5.11",
   "version":3,"createdAt":"2026-10-25 23:18:28"}}
 ```
 
@@ -73,7 +73,7 @@ Flowix 目前文档右上角 `...` 菜单只有一个「历史版本」入口，
 1. **`diffs` 的键是大写 `Type`/`Text`**（go-diff 默认序列化，无 json tag）。`Type`：`0`=EQUAL、`1`=INSERT、`-1`=DELETE。
 2. **该版本修改后的内容 = 按序拼接所有 `Type != -1` 的 `Text`**。不需要 dmp 库，也不需要 `content` 字段参与。
 3. **`createdAt` 是服务器本地时区的格式化字符串** `"2006-01-02 15:04:05"`，不是时间戳。Rust 侧必须解析为 epoch ms 再传前端，禁止把字符串直接丢给前端 `new Date()`。
-4. **认证三件套**：`Authorization: Bearer <jwt>` + `X-Client` 头必须与 token 的 `ClientType` 通配匹配（`IssueType=1` 的 token 强制校验，Flowix token 为 `flowix`）+ token 若绑定了 `UserAgent`/`BoundIP` 则请求必须匹配。**Flowix 侧统一发 `X-Client: flowix`，不设 User-Agent。**
+4. **认证三件套**：`Authorization: Bearer <jwt>` + `X-Client` 头必须与 token 的 `ClientType` 通配匹配（`IssueType=1` 的 token 强制校验，Flownote token 为 `flownote`）+ token 若绑定了 `UserAgent`/`BoundIP` 则请求必须匹配。**Flownote 侧统一发 `X-Client: flownote`，不设 User-Agent。**
 
 权限模型（`internal/middleware/user_auth_token.go`）：`/api/note/*` 的 GET 映射为 `note_r`、写映射为 `note_w`，走 token 的 Scope 矩阵校验；`vault` 参数受 token 的 vault 白名单约束。云端历史需要 token 具备 `note_r`（列表+详情）权限；恢复走本地写路径，不需要 `note_w`。
 
@@ -117,7 +117,7 @@ FNS 云端历史的唯一生成入口是 `ProcessDelay`（同步修改后 ~20s �
 
 ### D3：内容重建放 Rust 侧，前端不碰 REST
 
-token 与服务器 URL 只存在于 Rust 侧（`FnsConfig` + 各 notebook 的 `.flowix/sync-state.json`），前端 IPC 只拿到元数据列表和正文文本。前端永远接触不到凭据。
+token 与服务器 URL 只存在于 Rust 侧（`FnsConfig` + 各 notebook 的 `.flownote/sync-state.json`），前端 IPC 只拿到元数据列表和正文文本。前端永远接触不到凭据。
 
 ## 4. UI 设计
 
@@ -147,7 +147,7 @@ token 与服务器 URL 只存在于 Rust 侧（`FnsConfig` + 各 notebook 的 `.
 结构与本地子菜单一致（300px 浮层、hover 展开），列表项字段：
 
 ```
-[时间]                    [设备徽标: Flowix · 1.5.11]
+[时间]                    [设备徽标: Flownote · 1.5.11]
 [路径（截断）]            [v4 / 共 N 条]
 ```
 
@@ -180,7 +180,7 @@ v1 不做 diff 对比视图。详情接口已返回 `diffs`，后续做预览面
 
 ### 5.1 新增 Tauri 命令
 
-放在 `flowix-desktop/src/fns_sync/` 下新文件 `history.rs`（凭据解析、服务器 URL、token 读取都依赖 fns_sync 现有模块）：
+放在 `flownote-desktop/src/fns_sync/` 下新文件 `history.rs`（凭据解析、服务器 URL、token 读取都依赖 fns_sync 现有模块）：
 
 ```rust
 /// 云端版本列表。not_synced 单独成态，前端区分「没同步过」与出错。
@@ -208,8 +208,8 @@ restore_path_content(notebook_id, relative_path, content, expected_content) -> O
 
 ### 5.3 FNS REST 客户端
 
-- HTTP 客户端：新增 `reqwest`（`rustls-tls`）。**TLS roots 按 target 分段**：桌面 `rustls-native-certs`，Android `rustls-webpki-roots`（Android 系统证书读取不到是已踩过的坑，与 flowix-fns 现有 TLS 策略保持一致）。
-- 请求头：`Authorization: Bearer <token>`、`X-Client: flowix`、`X-Client-Name: Flowix`、`X-Client-Version: <app 版本>`。不设置 `User-Agent`（Flowix 签发的 token 不绑 UA；用户手工建了绑 UA 的 token 会得到 313，错误信息需友好提示）。
+- HTTP 客户端：新增 `reqwest`（`rustls-tls`）。**TLS roots 按 target 分段**：桌面 `rustls-native-certs`，Android `rustls-webpki-roots`（Android 系统证书读取不到是已踩过的坑，与 flownote-fns 现有 TLS 策略保持一致）。
+- 请求头：`Authorization: Bearer <token>`、`X-Client: flownote`、`X-Client-Name: Flownote`、`X-Client-Version: <app 版本>`。不设置 `User-Agent`（Flownote 签发的 token 不绑 UA；用户手工建了绑 UA 的 token 会得到 313，错误信息需友好提示）。
 - 超时：连接+响应合计 10s；不自动重试，失败直接暴露给 UI（用户手动重试）。同步通道有连接管理，历史查询是低频一次性请求，不值得复用连接池。
 - token 解析：`notebook_id → sync-state(token_id, vault) → FnsConfig.tokens` 沿用 fns_bind 时建立的映射；server URL 来自 `FnsConfig`。
 - `relative_path` 直接作为 FNS 的 `path`（同步协议即用笔记本相对路径），`\` 归一为 `/`，URL 编码交给 HTTP 客户端。
@@ -238,11 +238,11 @@ struct FnsDiff { r#type: i32, text: String }
 
 | 层 | 位置 | 说明 |
 |---|---|---|
-| 共享核心 | `flowix-core/src/fns_history.rs` | 阻塞式 REST 客户端 + go-diff 重建 + 类型; TLS roots 按 target 分段（桌面 native-roots / Android webpki） |
-| 凭据单源 | `flowix-core/src/fns_config.rs` | 由 `fns_sync/config.rs` 下沉而来（CLI 与内置 Agent 读同一份 `boot/fns-sync.json`），桌面侧仅 re-export + 策略枚举映射 |
+| 共享核心 | `flownote-core/src/fns_history.rs` | 阻塞式 REST 客户端 + go-diff 重建 + 类型; TLS roots 按 target 分段（桌面 native-roots / Android webpki） |
+| 凭据单源 | `flownote-core/src/fns_config.rs` | 由 `fns_sync/config.rs` 下沉而来（CLI 与内置 Agent 读同一份 `boot/fns-sync.json`），桌面侧仅 re-export + 策略枚举映射 |
 | 恢复写侧 | `MemoFile::write_restored_content` / `resolve_notebook_md_path` | 从桌面命令下沉到 core，三端共用 restore_backup 自保 + 原子覆写 |
-| 桌面壳 | `flowix-desktop/src/fns_sync/history.rs` | 解析 app 内绑定，`spawn_blocking` 包装 core 阻塞调用 |
-| CLI | `flowix-cli/src/cloud.rs` | `flowix cloud-versions <path> [-b notebook] [--page N] [--json]`、`flowix cloud-restore <path> --history <id>` |
+| 桌面壳 | `flownote-desktop/src/fns_sync/history.rs` | 解析 app 内绑定，`spawn_blocking` 包装 core 阻塞调用 |
+| CLI | `flownote-cli/src/cloud.rs` | `flownote cloud-versions <path> [-b notebook] [--page N] [--json]`、`flownote cloud-restore <path> --history <id>` |
 | MCP | `memo` 工具两个结构化 action | `cloud.versions`（`path`, 可选 `notebook`/`page`）、`cloud.restore`（`path`, `historyId` 必填）；`memo-tool-schema.json` 同步扩 enum 与 allOf |
 | 移动端内置 Agent | `agent_builtin/tools.rs` | 工具 `cloud_versions` / `cloud_restore`；`ToolScope` 新增 `config_dir` 以读取 FNS 凭据 |
 

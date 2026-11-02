@@ -1,0 +1,410 @@
+import { VideoEmbed } from './extensions/video-embed/node';
+import { Editor, Extension, renderNestedMarkdownContent } from '@tiptap/core';
+import type { JSONContent } from '@tiptap/core';
+import { NodeSelection } from '@tiptap/pm/state';
+import StarterKit from '@tiptap/starter-kit';
+import { TaskList } from '@tiptap/extension-task-list';
+import { Markdown } from '@tiptap/markdown';
+import Placeholder from '@tiptap/extension-placeholder';
+import { AttachmentLink } from '@features/editor/extensions/attachment-link';
+import { FlownoteHighlight } from '@features/editor/extensions/flownote-text-mark';
+import { Tag } from '@features/editor/extensions/tag';
+import MarkdownPaste from '@features/editor/extensions/markdown-paste';
+import ManagedPasteRules from '@features/editor/extensions/paste-rules';
+import { LinkSelectionHighlight, MarkdownLink } from '@features/editor/extensions/markdown-link';
+import { NoteReference } from '@features/editor/extensions/note-link';
+import { NoteReferenceBlock } from '@features/editor/extensions/note-block/note-reference-block';
+import { NoteMention, WikiNoteMention } from '@features/editor/extensions/note-mention';
+import { TagMention } from '@features/editor/extensions/tag-mention';
+import { CodeBlockShikiBase } from '@features/editor/extensions/codeblock-shiki/codeblock-shiki-base';
+import { MarkdownEscape, LegacyAdjacentStrongMarkdown } from './markdown-parser-core-extensions';
+import { MathBlock } from '@features/editor/extensions/math-block';
+import { WebCard } from '@features/editor/extensions/web-card';
+import { TableReference } from '@features/multidimensional-table/table-reference-node';
+import { MediaLibraryReference } from '@features/media-library/media-library-reference-node';
+import { SearchAndReplace } from '@features/editor/extensions/search-replace';
+import Frontmatter from '@features/editor/extensions/frontmatter';
+import { MenuPinExtension } from '@features/editor/extensions/menu-pin';
+import { BlockDragExtension } from '@features/editor/extensions/block-drag';
+import { BlockSelectionExtension } from '@features/editor/extensions/block-selection';
+import { HeadingFoldExtension, type HeadingFoldLabels } from '@features/editor/extensions/heading-fold';
+import { JsonFoldExtension, type JsonFoldLabels } from '@features/editor/extensions/codeblock-shiki/json-fold';
+import { ListTypeShortcuts } from '@features/editor/extensions/list-transforms';
+import { SlashMenu } from '@features/editor/extensions/slash-menu';
+import { AgentThreadCard } from '@features/agent/thread-card';
+import { TabAgentRun } from '@features/editor/extensions/tab-agent-run';
+import { TabCharacter } from '@features/editor/extensions/tab-character';
+import { tableNeedsHtml } from '@features/editor/extensions/table/flownote-table';
+import { createTablePlugin } from '@features/editor/extensions/table/table-plugin';
+import { BlockGapCursor } from './extensions/block-gap-cursor';
+import { StableCaret } from '@features/editor/extensions/stable-caret';
+import { ColumnsEditorNode, ColumnEditorNode } from '@features/editor/extensions/columns/columns-editor';
+import { CalloutEditorNode } from '@features/editor/extensions/callout/callout-editor';
+import { ToggleEditorNode } from '@features/editor/extensions/toggle/toggle-editor';
+import { MarkdownParagraph, MarkdownHeading, MarkdownListItem, MarkdownTaskItem } from './markdown-parser-common-extensions';
+import { appendFlownoteBlockBackgroundComment, flownoteBlockBackgroundCommentForNode } from './extensions/flownote-block-background';
+import { isEmptyMarkdownPlaceholderOnly } from './markdown-normalization';
+import type { WorkspaceHostId } from '@features/workspace/public/host-api';
+
+interface NestedListMarkdownContext {
+  parentType?: string;
+  index: number;
+  meta?: { parentAttrs?: { start?: number } };
+}
+
+type MarkdownRenderContext = {
+  parentType?: string | null;
+  index?: number;
+  meta?: {
+    parentAttrs?: {
+      start?: number;
+    };
+  };
+};
+
+type MarkdownNodeLike = {
+  type?: string;
+  text?: string;
+  content?: unknown;
+};
+
+const TABLE_CELL_PARENT_TYPES = new Set(['tableCell', 'tableHeader']);
+const LIST_ITEM_PARENT_TYPES = new Set(['listItem', 'taskItem']);
+const EMPTY_PARAGRAPH_MARKDOWN = '&nbsp;';
+
+function getParentType(ctx: MarkdownRenderContext): string {
+  return ctx.parentType || '';
+}
+
+function isTableCellContext(ctx: MarkdownRenderContext): boolean {
+  return TABLE_CELL_PARENT_TYPES.has(getParentType(ctx));
+}
+
+function isListItemLeadingParagraphContext(ctx: MarkdownRenderContext): boolean {
+  return LIST_ITEM_PARENT_TYPES.has(getParentType(ctx)) && ctx.index === 0;
+}
+
+function shouldDropEmptyParagraph(ctx: MarkdownRenderContext): boolean {
+  return isTableCellContext(ctx) || isListItemLeadingParagraphContext(ctx);
+}
+
+function renderEmptyParagraphMarkdown(ctx: MarkdownRenderContext): string {
+  return shouldDropEmptyParagraph(ctx) ? '' : EMPTY_PARAGRAPH_MARKDOWN;
+}
+
+function isEmptyParagraphPlaceholderTextNode(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+
+  const maybeNode = node as MarkdownNodeLike;
+  return maybeNode.type === 'text' &&
+    typeof maybeNode.text === 'string' &&
+    isEmptyMarkdownPlaceholderOnly(maybeNode.text);
+}
+
+function isEmptyParagraphForMarkdown(content: unknown[], ctx: MarkdownRenderContext): boolean {
+  if (content.length === 0) return true;
+  return shouldDropEmptyParagraph(ctx) && content.every(isEmptyParagraphPlaceholderTextNode);
+}
+
+const PreservedParagraph = MarkdownParagraph.extend({
+  renderMarkdown(node, h, ctx: MarkdownRenderContext) {
+    const content = Array.isArray(node.content) ? node.content : [];
+    const base = isEmptyParagraphForMarkdown(content, ctx)
+      ? renderEmptyParagraphMarkdown(ctx)
+      : h.renderChildren(content);
+
+    return appendFlownoteBlockBackgroundComment(base, flownoteBlockBackgroundCommentForNode(node));
+  },
+});
+
+/** Mark name used only while serializing ambiguous bold boundaries. */
+const HTMLStrongFallback = Extension.create({
+  name: 'htmlStrongFallback',
+  renderMarkdown: (node, h) => `<strong>${h.renderChildren(node)}</strong>`,
+  markdownOptions: {
+    htmlReopen: {
+      open: '<strong>',
+      close: '</strong>',
+    },
+  },
+});
+
+function isUnicodeLetterOrNumber(value: string | undefined): boolean {
+  return !!value && /^[\p{L}\p{N}]$/u.test(value);
+}
+
+function isUnicodePunctuation(value: string | undefined): boolean {
+  // Marked's delimiter rules treat both Unicode punctuation and symbols as
+  // punctuation around a closing `**`. Symbols include currency signs,
+  // copyright marks, and emoji, all of which can trigger the same ambiguity.
+  return !!value && /^[\p{P}\p{S}]$/u.test(value);
+}
+
+function markIsBold(mark: { type?: string }): boolean {
+  return mark.type === 'bold' || mark.type === 'htmlStrongFallback';
+}
+
+/**
+ * CommonMark rejects `**text。**下一句` because the closing delimiter is
+ * followed immediately by a letter. Convert only those bold runs to inline
+ * HTML, which is standard Markdown and remains portable across parsers.
+ */
+function markAmbiguousBoldRunsAsHtml(node: JSONContent): JSONContent {
+  if (!Array.isArray(node.content)) return node;
+  // HTML tables serialize native schema nodes, so Markdown-only marks must
+  // never enter their subtrees (including nested tables).
+  if (node.type === 'table' && tableNeedsHtml(node)) return node;
+
+  const content = node.content.map(child => markAmbiguousBoldRunsAsHtml(child));
+  if (node.type !== 'paragraph' && node.type !== 'heading') {
+    return content.every((child, index) => child === node.content![index])
+      ? node
+      : { ...node, content };
+  }
+
+  let nextContent = content;
+  let changed = content.some((child, index) => child !== node.content![index]);
+  let index = 0;
+  while (index < nextContent.length) {
+    const child = nextContent[index];
+    if (child.type !== 'text' || !child.marks?.some(markIsBold)) {
+      index += 1;
+      continue;
+    }
+
+    const runStart = index;
+    while (
+      index + 1 < nextContent.length
+      && nextContent[index + 1].type === 'text'
+      && nextContent[index + 1].marks?.some(markIsBold)
+    ) {
+      index += 1;
+    }
+
+    const lastText = nextContent[index].text ?? '';
+    const followingText = nextContent[index + 1]?.type === 'text'
+      ? nextContent[index + 1].text ?? ''
+      : '';
+    const lastCharacters = Array.from(lastText);
+    const lastCharacter = lastCharacters[lastCharacters.length - 1];
+    const followingCharacter = Array.from(followingText)[0];
+    const isAmbiguous = isUnicodePunctuation(lastCharacter)
+      && isUnicodeLetterOrNumber(followingCharacter);
+
+    if (isAmbiguous) {
+      for (let runIndex = runStart; runIndex <= index; runIndex += 1) {
+        const runChild = nextContent[runIndex];
+        const marks = runChild.marks;
+        if (!marks?.some(mark => mark.type === 'bold')) continue;
+        if (nextContent === content) nextContent = [...content];
+        nextContent[runIndex] = {
+          ...runChild,
+          marks: marks.map(mark => (
+            mark.type === 'bold' ? { ...mark, type: 'htmlStrongFallback' } : mark
+          )),
+        };
+        changed = true;
+      }
+    }
+
+    index += 1;
+  }
+
+  return changed ? { ...node, content: nextContent } : node;
+}
+
+export function serializeEditorMarkdown(editor: Editor): string {
+  const json = markAmbiguousBoldRunsAsHtml(editor.getJSON());
+  return editor.markdown?.serialize(json) ?? editor.getMarkdown();
+}
+
+function isEmptyParagraphNode(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+
+  const maybeNode = node as { type?: string; content?: unknown };
+  if (maybeNode.type !== 'paragraph') return false;
+  if (!Array.isArray(maybeNode.content) || maybeNode.content.length === 0) return true;
+  return maybeNode.content.every(isEmptyParagraphPlaceholderTextNode);
+}
+
+const PreservedListItem = MarkdownListItem.extend({
+  renderMarkdown(node, h, ctx) {
+    const content = Array.isArray(node.content) ? node.content : [];
+
+    if (content.length === 1 && isEmptyParagraphNode(content[0])) {
+      const bg = flownoteBlockBackgroundCommentForNode(content[0]);
+      const base = ctx?.parentType === 'orderedList'
+        ? `${(ctx.meta?.parentAttrs?.start || 1) + ctx.index}. ${EMPTY_PARAGRAPH_MARKDOWN}`
+        // A bare `-` followed by the comment would stop parsing as a list item;
+        // the empty-line marker keeps the bullet intact.
+        : bg ? `- ${EMPTY_PARAGRAPH_MARKDOWN}` : '-';
+      return appendFlownoteBlockBackgroundComment(base, bg);
+    }
+
+    return renderNestedMarkdownContent(
+      node,
+      h,
+      (context: NestedListMarkdownContext) => {
+        if (context.parentType === 'bulletList') {
+          return '- ';
+        }
+        if (context.parentType === 'orderedList') {
+          const start = context.meta?.parentAttrs?.start || 1;
+          return `${start + context.index}. `;
+        }
+        return '- ';
+      },
+      ctx,
+    );
+  },
+});
+
+const PreservedTaskItem = MarkdownTaskItem.extend({
+  renderMarkdown(node, h) {
+    const checkedChar = node.attrs?.checked ? 'x' : ' ';
+    const prefix = `- [${checkedChar}] `;
+    const content = Array.isArray(node.content) ? node.content : [];
+
+    if (!isEmptyParagraphNode(content[0])) {
+      return renderNestedMarkdownContent(node, h, prefix);
+    }
+
+    const nestedContent = content.slice(1);
+    let output = nestedContent.length === 0 ? `${prefix}${EMPTY_PARAGRAPH_MARKDOWN}` : prefix;
+    output = appendFlownoteBlockBackgroundComment(output, flownoteBlockBackgroundCommentForNode(content[0]));
+
+    nestedContent.forEach((child, index) => {
+      const childContent = h.renderChild?.(child, index + 1) ?? h.renderChildren([child]);
+      if (childContent === undefined || childContent === null) return;
+
+      const indentedChild = childContent
+        .split('\n')
+        .map(line => h.indent(line || ''))
+        .join('\n');
+
+      output += child.type === 'paragraph' ? `\n\n${indentedChild}` : `\n${indentedChild}`;
+    });
+
+    return output;
+  },
+});
+
+export interface MarkdownEditorExtensionContext {
+  ownerPath?: string;
+  getOwnerPath: () => string | undefined;
+  getAttachmentNotebookId: () => string | undefined;
+  /** Notebook root on this device; resolves notebook-relative attachment keys. */
+  getAttachmentNotebookPath?: () => string | undefined;
+  propertyTargetId?: string;
+  onViewSourceMode?: () => void;
+  transitionId?: number | null;
+  workspaceHost: WorkspaceHostId;
+  getPlaceholder: () => string;
+  getHeadingFoldLabels: () => HeadingFoldLabels;
+  getJsonFoldLabels?: () => JsonFoldLabels;
+}
+
+/** Full interactive editor registry; parser specs are shared through pure Markdown modules. */
+export function createMarkdownEditorExtensions({
+  ownerPath,
+  getOwnerPath,
+  getAttachmentNotebookId,
+  getAttachmentNotebookPath,
+  propertyTargetId,
+  onViewSourceMode,
+  transitionId,
+  workspaceHost,
+  getPlaceholder,
+  getHeadingFoldLabels,
+  getJsonFoldLabels = () => ({ fold: 'Collapse', unfold: 'Expand' }),
+}: MarkdownEditorExtensionContext, codeBlockExtension = CodeBlockShikiBase) {
+  // Event order follows extension priority, not this array's visual order:
+  // gap input normalization (1200) > slash menu (1150) > managed paste (1100)
+  // > editing handlers such as TabCharacter (1000) > gap navigation (50).
+  // Keep paste on its existing pipeline; the host's editorProps handlers run
+  // before plugins and must also defer to an active slash menu.
+  return [
+    StarterKit.configure({
+      heading: false,
+      dropcursor: false,
+      gapcursor: false,
+      // BlockGapCursor provides input after closed blocks. A forced trailing
+      // node would recreate the empty line the user just removed.
+      trailingNode: false,
+      link: false,
+      codeBlock: false,
+      paragraph: false,
+      listItem: false,
+    }),
+    MarkdownHeading.configure({ levels: [1, 2, 3, 4] }),
+    PreservedParagraph,
+    PreservedListItem,
+    MarkdownEscape,
+    HTMLStrongFallback,
+    LegacyAdjacentStrongMarkdown,
+    AttachmentLink.configure({
+      ownerPath,
+      getOwnerPath,
+      getNotebookId: getAttachmentNotebookId,
+      getNotebookPath: getAttachmentNotebookPath,
+    }),
+    MarkdownLink,
+    LinkSelectionHighlight,
+    codeBlockExtension.configure({ traceId: transitionId }),
+    MathBlock,
+    WebCard,
+    VideoEmbed,
+    TableReference,
+    MediaLibraryReference,
+    FlownoteHighlight.configure({ multicolor: true }),
+    createTablePlugin(),
+    ColumnsEditorNode,
+    ColumnEditorNode,
+    CalloutEditorNode,
+    ToggleEditorNode,
+    TaskList,
+    PreservedTaskItem.configure({ nested: true }),
+    Markdown.configure({ markedOptions: { gfm: true, breaks: true } }),
+    Placeholder.configure({
+      showOnlyCurrent: true,
+      // Node selections have no text caret, so suppress the placeholder on
+      // the empty paragraph immediately before a selected media node.
+      placeholder: ({ editor, node, pos }) => {
+        const selection = editor.state.selection;
+        if (
+          selection instanceof NodeSelection &&
+          selection.from === pos + node.nodeSize
+        ) {
+          return '';
+        }
+        return getPlaceholder();
+      },
+    }),
+    Tag,
+    ManagedPasteRules.configure({ ownerPath, getOwnerPath }),
+    MarkdownPaste,
+    Frontmatter.configure({
+      propertyTargetId,
+      onViewSourceMode,
+      getAttachmentNotebookId,
+    }),
+    NoteReference,
+    NoteReferenceBlock,
+    NoteMention,
+    WikiNoteMention,
+    TagMention,
+    BlockGapCursor,
+    StableCaret,
+    AgentThreadCard.configure({ workspaceHost }),
+    SlashMenu,
+    TabCharacter,
+    TabAgentRun,
+    SearchAndReplace,
+    MenuPinExtension,
+    BlockSelectionExtension,
+    BlockDragExtension,
+    HeadingFoldExtension.configure({ getLabels: getHeadingFoldLabels }),
+    JsonFoldExtension.configure({ getLabels: getJsonFoldLabels }),
+    ListTypeShortcuts,
+  ];
+}
