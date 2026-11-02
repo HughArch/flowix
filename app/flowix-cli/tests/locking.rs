@@ -26,6 +26,29 @@ fn write_child(config: &std::path::Path, address: &str, input: &std::path::Path)
         .unwrap()
 }
 
+/// Delete the notebook directory. POSIX unlinks files under open handles, so
+/// `remove_dir_all` just works there. Windows refuses to delete a tree while
+/// any process keeps a handle inside it — the waiting CLI legitimately holds
+/// its notebook index (`<root>/.flowix/notebook.db`) open — so there the note
+/// files are removed instead and the no-resurrection assertion below targets
+/// the note rather than the directory.
+fn remove_notebook_dir(root: &std::path::Path) {
+    if std::fs::remove_dir_all(root).is_ok() {
+        return;
+    }
+    for entry in std::fs::read_dir(root).unwrap().flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|name| name == ".flowix") {
+            continue;
+        }
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+}
+
 #[test]
 fn cli_writes_to_other_files_while_one_file_is_locked_by_another_process() {
     let temp = tempfile::tempdir().unwrap();
@@ -100,14 +123,22 @@ fn cli_does_not_recreate_a_removed_notebook_after_waiting_for_structure_lock() {
     let mut waiting = write_child(&config, "book::A.md", &input);
     std::thread::sleep(Duration::from_millis(150));
     assert!(waiting.try_wait().unwrap().is_none());
-    std::fs::remove_dir_all(&root).unwrap();
+    remove_notebook_dir(&root);
     memo.write_notebook_configs(&[]).unwrap();
     drop(held);
 
     assert!(wait_until_exit(&mut waiting, Duration::from_secs(3)));
     let output = waiting.wait_with_output().unwrap();
     assert!(!output.status.success(), "stale CLI save unexpectedly succeeded");
-    assert!(!root.exists(), "stale CLI save recreated the deleted notebook");
+    assert!(
+        memo.read_notebook_configs().unwrap().is_empty(),
+        "stale CLI save re-registered the removed notebook"
+    );
+    if cfg!(windows) {
+        assert!(!root.join("A.md").exists(), "stale CLI save recreated the deleted note");
+    } else {
+        assert!(!root.exists(), "stale CLI save recreated the deleted notebook");
+    }
 }
 
 #[test]
