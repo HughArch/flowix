@@ -18,7 +18,7 @@
 # Args:
 #   cer                Path to developerID_application.cer downloaded from
 #                     Apple Developer Portal after uploading the CSR.
-#   p12-output-path    Where to write the .p12 (default: ~/.flowix-signing/devid.p12)
+#   p12-output-path    Where to write the .p12 (default: ~/.flownote-signing/devid.p12)
 #   export-password    PKCS#12 export password. Read interactively if not given.
 #                     This same password is what you store in CI as
 #                     APPLE_CERT_PASSWORD, so don't lose it.
@@ -48,7 +48,7 @@ if [ ! -f "$CER" ]; then
   exit 1
 fi
 
-KEY_DIR="$HOME/.flowix-signing"
+KEY_DIR="$HOME/.flownote-signing"
 mkdir -p "$KEY_DIR"
 chmod 700 "$KEY_DIR"
 

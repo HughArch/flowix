@@ -24,7 +24,7 @@ key: xg8ccxdw
 
 ### 后端恢复记录
 
-- 附件落盘前，先将目标相对路径、memo ID、大小、SHA-256 和时间写入所属笔记本 `.flowix/attachment-imports/<UUID>.json`。
+- 附件落盘前，先将目标相对路径、memo ID、大小、SHA-256 和时间写入所属笔记本 `.flownote/attachment-imports/<UUID>.json`。
 - 成功发布附件后更新 `confirmed`。确认写入失败不把已经保存成功的文件伪报为失败；事前记录保留为未确认状态，并记录警告。
 - 未确认记录可能对应提交前中断，也可能对应已写入但来不及确认；**不能当作删除依据**。确认记录也不代表编辑器已经插入或保存引用。
 - `list_attachment_import_records({ notebookId })` 提供读取接口；最多检查 2000 条目录记录，返回所检查记录中最新的 200 条，遇到错误或截断设置 `incomplete`。不是无限制的全量历史查询。

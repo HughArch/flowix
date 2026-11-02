@@ -9,7 +9,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
-const apkRoot = path.join(repoRoot, 'app/flowix-desktop/gen/android/app/build/outputs/apk')
+const apkRoot = path.join(repoRoot, 'app/flownote-desktop/gen/android/app/build/outputs/apk')
 
 function findSdk() {
   const candidates = [
@@ -58,5 +58,5 @@ if (!apk) throw new Error(`No APK found in ${flavorDir}`)
 const sizeMb = (statSync(apk).size / 1024 / 1024).toFixed(1)
 process.stdout.write(`Installing ${path.basename(apk)} (${sizeMb} MB) to ${serial} (${abi})\n`)
 run(['-s', serial, 'install', '-r', apk])
-run(['-s', serial, 'shell', 'monkey', '-p', 'com.flowix.app', '-c', 'android.intent.category.LAUNCHER', '1'], true)
-process.stdout.write('Launched com.flowix.app\n')
+run(['-s', serial, 'shell', 'monkey', '-p', 'com.flownote.app', '-c', 'android.intent.category.LAUNCHER', '1'], true)
+process.stdout.write('Launched com.flownote.app\n')

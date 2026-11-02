@@ -11,7 +11,7 @@ const repo = resolve(import.meta.dirname, '..')
 // macOS exposes the system temp directory through /var, while APIs that
 // resolve project skill paths may return the canonical /private/var path.
 // Keep the extracted runtime and the paths it observes on one canonical path.
-const extraction = await realpath(await mkdtemp(resolve(tmpdir(), 'flowix-dsh-archive-')))
+const extraction = await realpath(await mkdtemp(resolve(tmpdir(), 'flownote-dsh-archive-')))
 try {
   run(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-xzf', resolve(archive), '-C', extraction])
   const metadata = JSON.parse(await readFile(resolve(extraction, 'dsh-runtime.json'), 'utf8'))

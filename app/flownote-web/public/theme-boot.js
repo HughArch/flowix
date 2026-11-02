@@ -1,0 +1,56 @@
+/*
+ * First-paint theme boot.
+ *
+ * React reads ~/.flownote/boot/preference.json through async Tauri IPC, which is
+ * too late for the first frame of a new WebView. This script runs before CSS
+ * paint and uses, in order:
+ *   1. one-shot ?bootTheme= injected by the desktop window command;
+ *   2. localStorage cache written by applyTheme();
+ *   3. the default Rock theme.
+ *
+ * Keep VALID_RESOLVED_THEMES aligned with the resolved themes in
+ * app/flownote-web/features/theme/palette.ts.
+ */
+(function () {
+  try {
+    var VALID_RESOLVED_THEMES = ['dark', 'light', 'rock', 'ember', 'mist'];
+    var params = new URLSearchParams(window.location.search || '');
+    var bootTheme = params.get('bootTheme');
+    var cached = bootTheme || localStorage.getItem('flownote-theme');
+    var resolved;
+
+    if (VALID_RESOLVED_THEMES.indexOf(cached) !== -1) {
+      resolved = cached;
+    } else {
+      resolved = 'rock';
+    }
+
+    var root = document.documentElement;
+    root.setAttribute('data-theme', resolved);
+    root.style.colorScheme = resolved === 'dark' || resolved === 'mist' ? 'dark' : 'light';
+
+    // Restore the last confirmed native material before CSS paints. React
+    // refreshes this value through IPC; browser previews never enable it.
+    if (('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+        && !window.location.hash.startsWith('#preferences')) {
+      var material = localStorage.getItem('flownote-window-material');
+      if (material === 'mica' || material === 'vibrancy') {
+        root.dataset.windowMaterial = material;
+      }
+    }
+
+    if (bootTheme && window.history && window.history.replaceState) {
+      params.delete('bootTheme');
+      var query = params.toString();
+      var nextUrl = window.location.pathname + (query ? '?' + query : '') + window.location.hash;
+      window.history.replaceState(null, document.title, nextUrl);
+    }
+  } catch (_) {
+    // Invalid cache / storage read errors should still resolve to the default.
+    try {
+      var root = document.documentElement;
+      root.setAttribute('data-theme', 'rock');
+      root.style.colorScheme = 'light';
+    } catch (_) {}
+  }
+})();

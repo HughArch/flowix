@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
-$dsh = 'C:\Users\Administrator\AppData\Roaming\Flowix\dsh\versions\1.0.2\bin\dsh.cmd'
+$dsh = 'C:\Users\Administrator\AppData\Roaming\Flownote\dsh\versions\1.0.2\bin\dsh.cmd'
 $runtimeHome = Join-Path $PSScriptRoot '..\dsh-runtime-test'
 $env:DSH_HOME = [System.IO.Path]::GetFullPath($runtimeHome)
-$output = & $dsh --profile flowix --dump-config 2>&1
-if ($LASTEXITCODE -ne 0) { throw "Flowix DSH dump-config failed: $output" }
+$output = & $dsh --profile flownote --dump-config 2>&1
+if ($LASTEXITCODE -ne 0) { throw "Flownote DSH dump-config failed: $output" }
 $text = $output -join "`n"
 if ($text -notmatch 'dsh-appserver-extension') { throw 'dsh-appserver extension was not loaded' }
 if ($text -notmatch 'dsh-user-approval') { throw 'native DSH approval service was not loaded' }

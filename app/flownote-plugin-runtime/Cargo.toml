@@ -1,0 +1,19 @@
+[package]
+name = "flownote-plugin-runtime"
+version.workspace = true
+description = "Flownote plugin artifact contracts and non-agent execution runtime"
+authors = ["Flownote Contributors"]
+edition.workspace = true
+
+[dependencies]
+flownote-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+semver = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -38,4 +38,4 @@ evidence. No further production code changes were needed during closeout.
 
 Limits: hosted CI has been configured but not executed from this source checkout;
 official signed packaging and a real end-to-end signed application update remain
-unverified. No Git repository was initialized or installed Flowix modified.
+unverified. No Git repository was initialized or installed Flownote modified.

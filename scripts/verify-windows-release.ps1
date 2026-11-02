@@ -8,17 +8,17 @@ if (-not (Test-Path -LiteralPath $Artifact -PathType Leaf)) {
   throw "Windows artifact not found: $Artifact"
 }
 
-$temp = Join-Path ([System.IO.Path]::GetTempPath()) ("flowix-verify-" + [guid]::NewGuid())
+$temp = Join-Path ([System.IO.Path]::GetTempPath()) ("flownote-verify-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
   Expand-Archive -LiteralPath $Artifact -DestinationPath $temp -Force
   $entries = Get-ChildItem -LiteralPath $temp -Recurse -File
   $forbidden = $entries | Where-Object {
     $_.Name -match '^(dsh-host|dsh-host-spawn-helper)(\.exe)?$' -or
-    $_.FullName -match 'dsh-flowix-memory|dsh-web-ui|dsh-client-ui-'
+    $_.FullName -match 'dsh-flownote-memory|dsh-web-ui|dsh-client-ui-'
   }
   if ($forbidden) {
-    throw "Flowix installer archive contains DSH files: $($forbidden.FullName -join ', ')"
+    throw "Flownote installer archive contains DSH files: $($forbidden.FullName -join ', ')"
   }
 
   $signtool = Get-Command signtool.exe -ErrorAction Stop

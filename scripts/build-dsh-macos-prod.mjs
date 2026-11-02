@@ -10,7 +10,7 @@ const script = fileURLToPath(new URL('./build-dsh-prod.mjs', import.meta.url))
 const targets = process.arch === 'arm64' ? ['arm64', 'x64'] : ['x64']
 for (const arch of targets) {
   const args = [script, `--target=node24-macos-${arch}`]
-  const x64Node = process.env.FLOWIX_DSH_X64_NODE?.trim() || 'node'
+  const x64Node = process.env.FLOWNOTE_DSH_X64_NODE?.trim() || 'node'
   const command = arch === 'x64' && process.arch === 'arm64'
     ? ['arch', ['-x86_64', x64Node, ...args]]
     : [process.execPath, args]

@@ -9,14 +9,14 @@ dist/
 .build/
 dsh-appserver/bin/
 app/target/
-app/flowix-desktop/target/
-app/flowix-desktop/binaries/
-app/flowix-desktop/nsis/flowix-installer-helper.exe
+app/flownote-desktop/target/
+app/flownote-desktop/binaries/
+app/flownote-desktop/nsis/flownote-installer-helper.exe
 
 # Tauri-generated native scaffolds
 # gen/android 需要入库: 含国内 maven 镜像、BuildTask npm 解析补丁及后续
 # MainActivity/applicationId 定制; 构建产物由 gen/android/.gitignore 排除。
-app/flowix-desktop/gen/schemas/
+app/flownote-desktop/gen/schemas/
 
 # Logs
 *.log
@@ -44,7 +44,7 @@ Thumbs.db
 # Tauri / Rust
 **/*.rs.bk
 Cargo.lock.bak
-# Rust 静态库产物 ── 仅 cargo build 生成，不应入库（曾经误提交过 libflowix_anthropic_check.rlib）
+# Rust 静态库产物 ── 仅 cargo build 生成，不应入库（曾经误提交过 libflownote_anthropic_check.rlib）
 *.rlib
 
 # Test / cache
@@ -54,7 +54,7 @@ coverage/
 
 # Local artifacts
 test.json
-app/flowix-desktop/tauri*.production.local.json
+app/flownote-desktop/tauri*.production.local.json
 
 # Cloudflare / Wrangler local dev state (miniflare cache, R2 sqlite/blobs)
 .wrangler/
@@ -64,7 +64,7 @@ app/flowix-desktop/tauri*.production.local.json
 *.p12
 *.csr
 *.cer
-flowix_devid.key
+flownote_devid.key
 .app-store-connect/
 developerID_application.*
 # iOS TestFlight pipeline additions (Apple Distribution cert,

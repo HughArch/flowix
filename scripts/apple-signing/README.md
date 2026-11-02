@@ -1,8 +1,8 @@
-# Apple Developer ID signing for Flowix
+# Apple Developer ID signing for Flownote
 
 This directory holds the three scripts that turn an Apple Developer account into a signed, notarized macOS DMG without ever leaking private keys or Apple credentials through any AI / chat / third-party service.
 
-Everything sensitive stays on **your Mac** under `~/.flowix-signing/`. The scripts in this directory are safe to commit; the files in `~/.flowix-signing/` are not, and are excluded by the repo's `.gitignore`.
+Everything sensitive stays on **your Mac** under `~/.flownote-signing/`. The scripts in this directory are safe to commit; the files in `~/.flownote-signing/` are not, and are excluded by the repo's `.gitignore`.
 
 ## The full pipeline, in one diagram
 
@@ -11,8 +11,8 @@ Your Mac (this script package runs here)
 ─────────────────────────────────────────
 gen-csr.sh
    ↓ writes
-   ├─ ~/.flowix-signing/devid.key          (private key, never leaves Mac)
-   └─ ~/.flowix-signing/devid.csr          (CSR for Apple)
+   ├─ ~/.flownote-signing/devid.key          (private key, never leaves Mac)
+   └─ ~/.flownote-signing/devid.csr          (CSR for Apple)
                                                        │
                                                        │ (you upload, via Apple website)
                                                        ▼
@@ -23,14 +23,14 @@ gen-csr.sh
                                                        ▼
 make-p12.sh
    ↓ reads
-   ├─ ~/.flowix-signing/devid.key
+   ├─ ~/.flownote-signing/devid.key
    └─ <downloaded .cer>
    ↓ writes
-   └─ ~/.flowix-signing/devid.p12         (PKCS#12 bundle, full identity)
+   └─ ~/.flownote-signing/devid.p12         (PKCS#12 bundle, full identity)
 
 (optional, for local dev)
    ↓
-   open ~/.flowix-signing/devid.p12       (imports to Keychain; this is what
+   open ~/.flownote-signing/devid.p12       (imports to Keychain; this is what
                                            dodges the "在钥匙串中找不到指定的项"
                                            error from bare-.cer import)
 
@@ -41,7 +41,7 @@ sign-and-notarize.sh
    ├─ $APPLE_ID
    └─ $APPLE_APP_SPECIFIC_PASSWORD (NOT your Apple ID password)
    ↓ produces
-   └─ .build/cargo-target/<target>/release/bundle/dmg/Flowix_*.dmg
+   └─ .build/cargo-target/<target>/release/bundle/dmg/Flownote_*.dmg
                                     (signed, hardened-runtime, notarized, stapled)
 ```
 
@@ -61,7 +61,7 @@ The output tells you where the .key and .csr landed.
 
 ### 2. Upload the CSR in your browser
 
-Open <https://developer.apple.com/account/resources/certificates/list>, click **+**, choose **Developer ID Application**, upload `~/.flowix-signing/devid.csr`. Apple issues a `.cer` within ~30s. Download it (e.g. to `~/Desktop/developerID_application.cer`).
+Open <https://developer.apple.com/account/resources/certificates/list>, click **+**, choose **Developer ID Application**, upload `~/.flownote-signing/devid.csr`. Apple issues a `.cer` within ~30s. Download it (e.g. to `~/Desktop/developerID_application.cer`).
 
 ### 3. Build a portable .p12 from .cer + private key
 
@@ -74,7 +74,7 @@ You'll be prompted for an export password — **remember it**, this same passwor
 ### 4. (Local dev only) Import the .p12 into your Keychain
 
 ```bash
-open ~/.flowix-signing/devid.p12
+open ~/.flownote-signing/devid.p12
 ```
 
 Then verify:
@@ -114,8 +114,8 @@ it creates the final DMG.
 | Apple ID password | Even if you trust the recipient, it's the master key to your Apple Account |
 | 2FA codes | They're time-limited and intended for appleid.apple.com only |
 | App-Specific Password (`APPLE_APP_SPECIFIC_PASSWORD`) | Goes in CI secrets, not chat |
-| Contents of `~/.flowix-signing/devid.key` | If leaked, treat the cert as compromised and revoke it on Apple Developer Portal |
-| Contents of `~/.flowix-signing/devid.p12` | Same as above plus the export password |
+| Contents of `~/.flownote-signing/devid.key` | If leaked, treat the cert as compromised and revoke it on Apple Developer Portal |
+| Contents of `~/.flownote-signing/devid.p12` | Same as above plus the export password |
 | `Developer ID Application: ...` full identity string | Not as sensitive but is enough to find your Team ID and Org name |
 
 If any of the above ever appears in a transcript you share (GitHub issue, Slack thread, LLM conversation), **revoke the certificate immediately** at <https://developer.apple.com/account/resources/certificates/list> and regenerate.
@@ -124,7 +124,7 @@ If any of the above ever appears in a transcript you share (GitHub issue, Slack 
 
 - We never log in to your Apple Account programmatically. The Portal still requires browser + 2FA.
 - We never invoke `notarytool` with a password from a file. It comes from the env var, set per-invocation.
-- We never commit the private key. The `.gitignore` excludes `*.p12`, `*.key`, `*.csr`, and the whole `~/.flowix-signing/` directory.
+- We never commit the private key. The `.gitignore` excludes `*.p12`, `*.key`, `*.csr`, and the whole `~/.flownote-signing/` directory.
 
 ## Troubleshooting
 

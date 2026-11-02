@@ -31,7 +31,7 @@ const flags = compact.filter(
 
 const destination = path.join(
   repoRoot,
-  'app/flowix-web/features/editor/extensions/callout/flag-assets',
+  'app/flownote-web/features/editor/extensions/callout/flag-assets',
 )
 fs.rmSync(destination, { recursive: true, force: true })
 fs.mkdirSync(destination, { recursive: true })

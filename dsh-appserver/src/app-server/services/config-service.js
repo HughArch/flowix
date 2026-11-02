@@ -4,7 +4,7 @@ const READ_ONLY_LAYERS = new Set(['defaults', 'system', 'managed'])
 const SECRET_PARTS = /(?:secret|token|password|api[-_]?key|authorization|credential)/iu
 const ALLOWED_PATHS = Object.freeze({
   'llm-pi-ai': [['providers']],
-  'flowix-appserver': [['skills'], ['mcp'], ['runtime'], ['agent']],
+  'flownote-appserver': [['skills'], ['mcp'], ['runtime'], ['agent']],
 })
 
 function object(value) { return value && typeof value === 'object' && !Array.isArray(value) ? value : {} }
@@ -158,12 +158,12 @@ export class ConfigService {
   }
 
   async writeValue(params = {}) {
-    const namespace = params.namespace || 'flowix-appserver'
+    const namespace = params.namespace || 'flownote-appserver'
     return this.mutate(namespace, [{ path: params.path, operation: params.operation || params.op || 'set', value: params.value }], params.expectedRevision)
   }
 
   async batchWrite(params = {}) {
-    return this.mutate(params.namespace || 'flowix-appserver', params.edits, params.expectedRevision)
+    return this.mutate(params.namespace || 'flownote-appserver', params.edits, params.expectedRevision)
   }
 
   requirements(namespace) {

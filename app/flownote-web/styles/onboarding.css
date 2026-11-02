@@ -1,0 +1,17 @@
+/* macOS title bar drag region; kept as a semantic hook for the native window. */
+.flownote-onboarding__titlebar-mac {
+  flex: 0 0 auto;
+  width: 100%;
+  height: 48px;
+  -webkit-app-region: drag;
+}
+
+@keyframes flownote-onboarding-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes flownote-onboarding-section-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

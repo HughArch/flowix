@@ -1,0 +1,159 @@
+import type { ChatMessage } from "@/types";
+import type {
+  AgentEvent,
+  AgentMessageAttachment,
+  AgentTypeKey,
+} from "@/types/agent";
+import {
+  appendFirstMessageContext,
+  buildUserLlmContent,
+} from "@features/agent/store/context-block";
+import { applyRunStarted } from "@features/agent/store/run-lifecycle";
+import type { ThreadState } from "@features/agent/store/thread-runtime-state";
+
+export interface OutgoingUserPayload {
+  llmContent: string;
+  systemReminderDirectory?: string;
+  systemReminderDocumentPath?: string;
+}
+
+export interface PreparedUserMessage {
+  userPayload: OutgoingUserPayload;
+  llmContent: string;
+  userMessage: ChatMessage;
+}
+
+export interface PrepareUserMessageOptions {
+  content: string;
+  isFirstMessage: boolean;
+  agentType: AgentTypeKey;
+  currentNoteContent?: string;
+  systemReminderDirectory?: string;
+  attachments?: AgentMessageAttachment[];
+  /**
+   * Flownote-only: pre-built skill body blocks the user loaded via `/` chips.
+   * Appended to `llmContent` (never `content`), so bubbles stay clean.
+   */
+  skillContext?: string;
+}
+
+type AgentMessageAttachmentSource = Pick<AgentMessageAttachment, "path" | "name" | "mimeType">;
+
+function attachmentMimeType(path: string): string {
+  const extension = path.split(/[\\/]/u).pop()?.split(".").pop()?.toLowerCase();
+  switch (extension) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "png":
+    default:
+      return "image/png";
+  }
+}
+
+/** Build image display metadata from cached paths or their existing metadata. */
+export function createAgentMessageAttachments(
+  attachments: readonly (string | AgentMessageAttachmentSource)[] | undefined,
+): AgentMessageAttachment[] {
+  return (attachments ?? []).map((attachment, index) => {
+    const path = typeof attachment === "string" ? attachment : attachment.path;
+    const name = typeof attachment === "string"
+      ? path.split(/[\\/]/u).pop() || `image-${index + 1}`
+      : attachment.name;
+    return {
+      type: "input_image",
+      path,
+      name,
+      mimeType: typeof attachment === "string" ? attachmentMimeType(path) : attachment.mimeType,
+      detail: "high",
+    };
+  });
+}
+
+/**
+ * 把"用户键入文字 + 上下文元数据"装成一条 outgoing user message ── LLM
+ * 实际看到的 `llmContent` 可能额外拼了首条消息的当前笔记摘要，
+ * 但 `userMessage.content` 始终只保存用户实际输入，避免
+ * 把内部 workspace/CLI 指令渲染到消息列表。
+ *
+ * 注意 `llmContent` 与 `userPayload.llmContent` 同值, 但 dispatched 的 IPC
+ * 需要 `userPayload` 携带 system-reminder 路径字段 (cwd 等等), 因此
+ * 同时返回两个 ── caller 决定给后端发哪个版本。
+ */
+export function prepareUserMessage({
+  content,
+  isFirstMessage,
+  agentType,
+  currentNoteContent,
+  systemReminderDirectory,
+  attachments,
+  skillContext,
+}: PrepareUserMessageOptions): PreparedUserMessage {
+  const userPayload = buildUserLlmContent(content, systemReminderDirectory);
+  // Skill blocks are material the user explicitly attached, so they sit right
+  // after the typed text and before the first-message notebook context.
+  const withSkillContext = skillContext
+    ? `${userPayload.llmContent}\n\n${skillContext}`
+    : userPayload.llmContent;
+  const llmContent = appendFirstMessageContext(
+    withSkillContext,
+    isFirstMessage,
+    currentNoteContent,
+    agentType,
+  );
+  return {
+    userPayload,
+    llmContent,
+    userMessage: {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content,
+      attachments: attachments?.length ? attachments : undefined,
+      llmContent,
+      systemReminderDirectory: userPayload.systemReminderDirectory,
+      systemReminderDocumentPath: userPayload.systemReminderDocumentPath,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * "乐观"地把 user message 推进 thread state ── 与后端 IPC 触发并行。
+ * `applyRunStarted` 建 active run, 紧接在 messages 末尾 append user message。
+ *
+ * 这里不写 `isLoading` 由 stream_start chunk 收敛 ── 比直接 set=true 更
+ * 准确, 避免后端未实际启动时 UI 已经显示"运行中"。
+ */
+export function applyOptimisticUserRun(
+  st: ThreadState,
+  event: AgentEvent,
+  userMessage: ChatMessage,
+): ThreadState {
+  return {
+    ...applyRunStarted(st, event),
+    messages: [...st.messages, userMessage],
+    pendingAssistantId: null,
+    pendingReasoningId: null,
+  };
+}
+
+/**
+ * IPC 自身抛错 (后端 spawn 失败 / 命令未注册) 时构造一条 assistant
+ * 错误卡片 ── 不同于流式 error chunk (那条是后端通过 stream 发回来的)。
+ * 这里不进 chunk 路径, 直接 append 到 messages。
+ */
+export function createSendErrorMessage(
+  err: unknown,
+  fallback: string,
+): ChatMessage {
+  return {
+    id: `error-${Date.now()}`,
+    role: "assistant",
+    content: typeof err === "string" && err ? err : fallback,
+    timestamp: new Date().toISOString(),
+  };
+}

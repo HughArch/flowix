@@ -1,4 +1,4 @@
-# Flowix Agent 消息与 Runtime 收敛实施计划
+# Flownote Agent 消息与 Runtime 收敛实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** React 19 / TypeScript / Zustand / Vitest；Rust / Tokio / Tauri 2；DSH app-server 使用其子项目 Vitest。
 
-**Spec:** 本次会话用户提供的《Flowix Agent 消息与 Runtime 管理收敛落地方案》（分析基线 a7c3cef5dc52b0aef8be243767114916d7f48f66，2026-10-09）。本文件保存实施所需的核心约束及审查修订；完整原文在会话中，执行人员应同时阅读。没有修改原方案或业务代码。
+**Spec:** 本次会话用户提供的《Flownote Agent 消息与 Runtime 管理收敛落地方案》（分析基线 a7c3cef5dc52b0aef8be243767114916d7f48f66，2026-10-09）。本文件保存实施所需的核心约束及审查修订；完整原文在会话中，执行人员应同时阅读。没有修改原方案或业务代码。
 
 ## Global Constraints
 
@@ -26,7 +26,7 @@
 
 ## 审查结论与本次证据
 
-审查日期：2026-10-10。目录 `D:/02 vibeworking/flowix` 是源码资料副本，没有 `.git`，不能证明与上述提交完全相同。以下为本地源码事实，不是基线提交的动态运行结果。
+审查日期：2026-10-10。目录 `D:/02 vibeworking/flownote` 是源码资料副本，没有 `.git`，不能证明与上述提交完全相同。以下为本地源码事实，不是基线提交的动态运行结果。
 
 | 项目 | 已核对事实 | 实施意义 |
 | --- | --- | --- |
@@ -91,7 +91,7 @@
 
 ### 任务 1：修复空白与缓冲归属（首个业务 PR）
 
-**Files:** store/stream-event-dispatcher.ts、streaming-buffer.ts、stream-event-dispatcher.test.ts；新增 store/streaming-buffer.test.ts。此处及后续 store 路径前缀均为 app/flowix-web/features/agent/。
+**Files:** store/stream-event-dispatcher.ts、streaming-buffer.ts、stream-event-dispatcher.test.ts；新增 store/streaming-buffer.test.ts。此处及后续 store 路径前缀均为 app/flownote-web/features/agent/。
 
 **Interfaces:** 缓冲消费入队事件，保存 threadId、runId、agentType 与来源元数据；flush 返回有序事件批次。有 messageId/snapshot/sourceSequence 的现有同步分支先保留。无 runId 的旧事件在入队前一次解析，flush 不再补当前 runId。
 
@@ -115,7 +115,7 @@
 
 ### 任务 3：共享认领、幂等和 Claude 全生命周期试点
 
-**Files:** app/flowix-desktop/src/agent_external/shared/{runtime.rs,lifecycle.rs,process_io.rs,tests.rs}、claude/cli.rs、claude/cli/tests.rs；commands/agent/{chat.rs,runtime.rs}；app 状态装配处。
+**Files:** app/flownote-desktop/src/agent_external/shared/{runtime.rs,lifecycle.rs,process_io.rs,tests.rs}、claude/cli.rs、claude/cli/tests.rs；commands/agent/{chat.rs,runtime.rs}；app 状态装配处。
 
 **Interfaces:** 在共享管理内定义 `accept_run(thread, runtime, run_id, fingerprint) -> Result<AcceptedRun, AcceptError>`、`attach_execution(ticket, handle)`、`request_stop(thread, run_id)`、`finalize_run(thread, run_id, confirmed_outcome)`。上述为目标语义，具体 Rust 所有权类型随现有容器确定；`AcceptedRun` 区分新接受与重复接受，只有前者启动。进程停止返回 Confirmed/Unconfirmed 及诊断，不再用 () 表达成功。
 
@@ -125,11 +125,11 @@
 - [ ] 启动 supervisor 持有票据；取消意图与关联原子核验。移除操作只在 finalize 确认后执行；逻辑终结与通知是否发送分开，Tauri emit 失败仍可查询终态。
 - [ ] 为实际平台实现停止确认，覆盖进程树与超时；不得将 taskkill 返回、stdout EOF 或主进程状态普遍当作所有场景的证明。
 - [ ] 用可控时钟测试终结后 30 分钟、4096 上限、活跃不淘汰、已有键重试不受满额阻断；值依任务 0 冻结结果同步调整客户端。
-- [ ] 运行 `cargo test --manifest-path app/Cargo.toml -p flowix-desktop --lib agent_external::shared` 和 `... --lib agent_external::claude`；真实 Claude 启停 smoke 后提交。此阶段仅声明 Claude 试点闭环。
+- [ ] 运行 `cargo test --manifest-path app/Cargo.toml -p flownote-desktop --lib agent_external::shared` 和 `... --lib agent_external::claude`；真实 Claude 启停 smoke 后提交。此阶段仅声明 Claude 试点闭环。
 
 ### 任务 4：运行 IPC、前端 phase 与未知状态闭环
 
-**Files:** app/flowix-desktop/src/agent_wire.rs、commands/agent/chat.rs、agent_external/runtime_registry.rs；前端 types/agent 相关定义、store/agent-session-store.ts、session-reducer/types.ts、run-lifecycle.ts、hooks/use-agent-events.ts、busy selectors 和运行按钮控制器。
+**Files:** app/flownote-desktop/src/agent_wire.rs、commands/agent/chat.rs、agent_external/runtime_registry.rs；前端 types/agent 相关定义、store/agent-session-store.ts、session-reducer/types.ts、run-lifecycle.ts、hooks/use-agent-events.ts、busy selectors 和运行按钮控制器。
 
 **Interfaces:** RunInfo 可选 phase=starting/running/stopping；运行查询区分成功空结果、查询失败、原生状态未知；发送返回接受 runId，停止返回 accepted/confirmed/unconfirmed 的内部结果。旧 IPC 由边界适配。
 
@@ -206,12 +206,12 @@
 根项目（先安装锁定依赖）：
 
 ```powershell
-npm test -- app/flowix-web/features/agent/store/stream-event-dispatcher.test.ts app/flowix-web/features/agent/store/external-session.test.ts app/flowix-web/features/agent/store/agent-history-adapters.test.ts app/flowix-web/features/agent/store/thread-history-slice.test.ts app/flowix-web/features/agent/store/session-reducer/ app/flowix-web/features/agent/store/agent-session-actions.test.ts
+npm test -- app/flownote-web/features/agent/store/stream-event-dispatcher.test.ts app/flownote-web/features/agent/store/external-session.test.ts app/flownote-web/features/agent/store/agent-history-adapters.test.ts app/flownote-web/features/agent/store/thread-history-slice.test.ts app/flownote-web/features/agent/store/session-reducer/ app/flownote-web/features/agent/store/agent-session-actions.test.ts
 npm run check:layers
 npm run check:frontend-debt
 npm exec -- tsc --noEmit
 npm run build
-cargo test --manifest-path app/Cargo.toml -p flowix-desktop --lib agent_external
+cargo test --manifest-path app/Cargo.toml -p flownote-desktop --lib agent_external
 ```
 
 DSH 使用其锁定依赖，安装后从根项目执行：
@@ -225,7 +225,7 @@ npm --prefix dsh-appserver run typecheck
 
 ## 实施进度（2026-10-10）
 
-这是未完成的实施记录。资料副本没有 `.git`，所以没有分支、提交或 PR；文件变动直接位于 `D:/02 vibeworking/flowix`。
+这是未完成的实施记录。资料副本没有 `.git`，所以没有分支、提交或 PR；文件变动直接位于 `D:/02 vibeworking/flownote`。
 
 - 已完成任务 1 的空白 delta 与缓冲 run 归属修复，含旧事件缺少有效 runId 的兼容测试。
 - 任务 2 部分完成：provider 别名按 runtime 解析；无 runtime 的别名事件不会按缓存类型猜测归属；运行快照提交前比较请求时的投影引用，避免旧空快照清除查询期间的新 run。删除/切换绑定的代次保护仍待做。
@@ -233,7 +233,7 @@ npm --prefix dsh-appserver run typecheck
 - 后端修复：生成的 runId 改用 UUID，避免同毫秒碰撞；共享 Starting 认领、停止确认、幂等、全 runtime 接入尚未实施。
 - `npm exec -- tsc --noEmit` 通过；`npm run build` 通过。受影响的 5 个前端测试文件最近一次运行 87 通过、1 失败，失败为实施前已记录的 Codex `source.memoId` 断言。此后新增 Pi 游标测试及无类型别名保护测试各自通过，整组需要最终重跑。
 - `npm run check:layers` 为已有 11 处违规；`npm run check:frontend-debt` 为已有 console 111 > 106。实施未增加直接 console 调用。
-- Rust CLI 已构建并放置 Tauri sidecar；桌面测试可编译，但测试进程在当前 Windows 环境启动时返回 `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)`，未执行断言。`cargo check --manifest-path app/Cargo.toml -p flowix-desktop -j 1` 在 runId 修改后通过。Rust 行为验证仍是发布阻断项。
+- Rust CLI 已构建并放置 Tauri sidecar；桌面测试可编译，但测试进程在当前 Windows 环境启动时返回 `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)`，未执行断言。`cargo check --manifest-path app/Cargo.toml -p flownote-desktop -j 1` 在 runId 修改后通过。Rust 行为验证仍是发布阻断项。
 
 接续顺序：完成任务 2 的绑定与删除版本保护；先解决桌面测试运行环境，再按任务 3/4 实施原子认领、停止证明与前端 phase；随后实施任务 6/7/8/9。任何人在合入前应以真实 Git checkout 重新核对当前源码及基线。
 
@@ -259,7 +259,7 @@ npm --prefix dsh-appserver run typecheck
 
 - `ExternalRunRegistry` 增加按 thread/run 记录的 Stopping 占位。`stop_run` 在锁内把运行 child 转为停止占位，锁外执行进程树终止，并最多等待 5 秒确认主进程退出；确认后释放，占位期间拒绝新启动。若未确认，将 child 放回登记以便同一 run 重试停止，运行查询返回 `phase: "stopping"`。
 - 旧流尾、启动前 stale reaper 与 idle watchdog 在停止占位期间不抢走 child；发现先前未确认的 child 已退出时，启动前检查可以清理占位。停止请求仍使用已有可选 runId 兼容参数；跨 runtime 公共操作槽位、明确 StopUnconfirmed 返回契约和全终结路径幂等仍待下一批。
-- `cargo check -p flowix-desktop` 在最终源码上通过。Windows 补充真实子进程终止测试，验证确认退出后才释放槽位。使用 `.build/cargo-target` 中的测试二进制临时嵌入 Common Controls v6 清单执行，全部 `agent_external` 284/284 通过；仓库级 `cargo fmt --all -- --check` 仍有大量既有差异，未批量改写。
+- `cargo check -p flownote-desktop` 在最终源码上通过。Windows 补充真实子进程终止测试，验证确认退出后才释放槽位。使用 `.build/cargo-target` 中的测试二进制临时嵌入 Common Controls v6 清单执行，全部 `agent_external` 284/284 通过；仓库级 `cargo fmt --all -- --check` 仍有大量既有差异，未批量改写。
 
 ### 下一步代码调整（按用户要求未构建）
 

@@ -65,7 +65,7 @@ function goalRound(content) {
  * DSH goal prompts are model-facing control messages, not human messages.
  * Their source envelope is the stable discriminator; the XML tags are kept as
  * a defensive check for old/replayed logs. Return a short display projection
- * and never expose the continuation/wrap-up instructions to Flowix users.
+ * and never expose the continuation/wrap-up instructions to Flownote users.
  */
 function goalControlFromMessage(event, payload, content = textOf(payload)) {
   if (event?.type !== 'user/message') return undefined
@@ -538,7 +538,7 @@ function reasoningMessageFromAssistant(threadId, event, payload, block, index) {
   }
 }
 
-/** Project one persisted DSH event into all Flowix-visible messages. */
+/** Project one persisted DSH event into all Flownote-visible messages. */
 export function messagesFromEvent(threadId, event, toolNames = undefined, display = undefined) {
   const message = messageFromEvent(threadId, event, toolNames, display)
   if (!message || event.type !== 'assistant/message') return message ? [message] : []
@@ -601,8 +601,8 @@ function historyErrorMessageFromTurnEnd(threadId, event, failure) {
 }
 
 /**
- * Project the durable event log into the message shape consumed by Flowix.
- * DSH stores tool calls and results as separate audit events, while Flowix
+ * Project the durable event log into the message shape consumed by Flownote.
+ * DSH stores tool calls and results as separate audit events, while Flownote
  * renders one tool row; merge those events before pagination.
  */
 export function projectHistoryMessages(
@@ -615,7 +615,7 @@ export function projectHistoryMessages(
   const messages = []
   const toolIndexes = new Map()
   // DSH's surface replacement controls what the model sees after compaction.
-  // Flowix has a separate user-facing timeline projection: it keeps the
+  // Flownote has a separate user-facing timeline projection: it keeps the
   // audit/history rows and appends the compaction checkpoint. Do not turn a
   // provider context rewrite into a destructive UI history rewrite.
   const preserveCompactedHistory = options?.preserveCompactedHistory === true

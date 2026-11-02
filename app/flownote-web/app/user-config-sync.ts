@@ -1,0 +1,39 @@
+import { usePropertyPresetStore } from '@features/properties/property-preset-store';
+
+export type UserConfigChangeKind = 'preference' | 'property_presets' | 'ai_config' | 'dsh_config' | 'pi_config';
+
+interface UserConfigSyncActions {
+  reloadPreferences: () => void | Promise<void>;
+  refreshAgentRuntime: () => void | Promise<void>;
+}
+
+/**
+ * Route a persisted user-config change to the in-memory state it invalidates.
+ *
+ * Tauri windows run separate JavaScript contexts, so each window must update
+ * its own stores after receiving the backend broadcast.
+ */
+export function syncUserConfigChange(
+  kind: UserConfigChangeKind,
+  actions: UserConfigSyncActions,
+): void {
+  if (kind === 'property_presets') {
+    void usePropertyPresetStore.getState().load().catch(console.error);
+    return;
+  }
+  if (kind === 'preference') {
+    void actions.reloadPreferences();
+    return;
+  }
+  if (kind === 'pi_config') {
+    void import('@features/agent/services/agent-catalog-service')
+      .then(({ refreshAgentModelCatalog }) => refreshAgentModelCatalog('pi'))
+      .catch((error) => console.warn('Failed to refresh the Pi model catalog after its configuration changed', error));
+    return;
+  }
+
+  // Runtime freshness currently has one timestamp for the complete status
+  // snapshot. Refresh the complete snapshot so unrelated agent statuses are
+  // not marked fresh after only Flownote was updated.
+  void actions.refreshAgentRuntime();
+}

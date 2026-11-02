@@ -2,7 +2,7 @@
 # Generate a 2048-bit RSA private key + PKCS#10 Certificate Signing Request
 # for an Apple Developer ID Application certificate.
 #
-# All output goes to ~/.flowix-signing/, NEVER inside the repo. The private key
+# All output goes to ~/.flownote-signing/, NEVER inside the repo. The private key
 # is generated locally and stays local — only the CSR ever leaves this machine
 # (when uploaded to https://developer.apple.com/).
 #
@@ -19,8 +19,8 @@
 #   country-code      ISO 3166-1 alpha-2 (default: US)
 #
 # Outputs:
-#   ~/.flowix-signing/devid.key     private key (NEVER SHARE, NEVER COMMIT)
-#   ~/.flowix-signing/devid.csr     CSR to upload to Apple
+#   ~/.flownote-signing/devid.key     private key (NEVER SHARE, NEVER COMMIT)
+#   ~/.flownote-signing/devid.csr     CSR to upload to Apple
 #
 # After running:
 #   1. Open https://developer.apple.com/account/resources/certificates/list
@@ -63,7 +63,7 @@ if [[ ! "$COUNTRY" =~ ^[A-Z]{2}$ ]]; then
   echo "ERROR: country must be a 2-letter ISO code, got: $COUNTRY" >&2; exit 2
 fi
 
-KEY_DIR="$HOME/.flowix-signing"
+KEY_DIR="$HOME/.flownote-signing"
 mkdir -p "$KEY_DIR"
 chmod 700 "$KEY_DIR"
 

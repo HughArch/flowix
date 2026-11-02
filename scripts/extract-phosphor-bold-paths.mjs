@@ -2,7 +2,7 @@
 // Extracts Phosphor SVG path strings (configurable weight) from
 // @phosphor-icons/react's defs/<PascalName>.es.js files, then prints
 // them out as a TS object literal body in the exact shape used by
-// `app/flowix-web/features/agent/message/tools.tsx::TOOL_ICON_PATHS`.
+// `app/flownote-web/features/agent/message/tools.tsx::TOOL_ICON_PATHS`.
 //
 // Why this script exists: `tools.tsx` stores tool icons as inline SVG
 // path strings (256×256 viewBox) so both the React panel and the

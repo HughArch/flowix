@@ -11,13 +11,13 @@ if (Number(process.versions.node.split('.')[0]) !== 24) {
 if (process.arch !== 'x64') throw new Error(`unsupported Windows DSH architecture: ${process.arch}`)
 
 const repo = resolve(import.meta.dirname, '..')
-process.env.FLOWIX_DSH_REQUIRE_PINNED = '1'
+process.env.FLOWNOTE_DSH_REQUIRE_PINNED = '1'
 await import('./ensure-dsh-upstream.mjs')
 const upstream = resolve(repo, '.build/upstream/deepseek-harness')
 const target = 'node24-windows-x64'
 const bundle = resolve(repo, '.build/dsh-runtime-bundle', target)
 const runtime = resolve(bundle, 'runtime')
-const profile = resolve(bundle, 'profile/flowix')
+const profile = resolve(bundle, 'profile/flownote')
 const pnpmVersion = '11.7.0'
 const corepack = resolve(dirname(process.execPath), 'node_modules/corepack/dist/corepack.js')
 
@@ -29,7 +29,7 @@ if (!existsSync(resolve(upstream, 'node_modules/.modules.yaml'))) {
   await run(process.execPath, [corepack, `pnpm@${pnpmVersion}`, 'install', '--frozen-lockfile', '--prod=false'], upstream)
 }
 const cliMarker = resolve(upstream, 'apps/cli/lib/bin.js')
-if (!existsSync(cliMarker) || process.env.FLOWIX_DSH_REBUILD_LIBS === '1') {
+if (!existsSync(cliMarker) || process.env.FLOWNOTE_DSH_REBUILD_LIBS === '1') {
   await run(process.execPath, [corepack, `pnpm@${pnpmVersion}`, 'run', 'build:lib:host'], upstream)
 }
 
@@ -46,15 +46,15 @@ await verifyDshNativePackages(runtime)
 await rm(resolve(runtime, 'src'), { recursive: true, force: true })
 await copyTree(resolve(upstream, 'apps/cli'), resolve(runtime, 'node_modules/@deepseek-ai/dsh'))
 await copyTree(resolve(repo, 'dsh-appserver'), resolve(runtime, 'node_modules/dsh-appserver'), true)
-await copyTree(resolve(repo, 'dsh-flowix-memory'), resolve(runtime, 'node_modules/dsh-flowix-memory'), true)
+await copyTree(resolve(repo, 'dsh-flownote-memory'), resolve(runtime, 'node_modules/dsh-flownote-memory'), true)
 
 await mkdir(resolve(profile, 'node_modules'), { recursive: true })
 await copyTree(resolve(repo, 'dsh-appserver'), resolve(profile, 'node_modules/dsh-appserver'), true)
-await copyTree(resolve(repo, 'dsh-flowix-memory'), resolve(profile, 'node_modules/dsh-flowix-memory'), true)
+await copyTree(resolve(repo, 'dsh-flownote-memory'), resolve(profile, 'node_modules/dsh-flownote-memory'), true)
 await cp(resolve(repo, 'scripts/dsh-dev-profile.patch.yml'), resolve(profile, 'cordis.patch.yml'))
 await writeFile(resolve(profile, 'package.json'), `${JSON.stringify({
-  name: 'dsh-profile-flowix', private: true,
-  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flowix-memory'] } },
+  name: 'dsh-profile-flownote', private: true,
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flownote-memory'] } },
 }, null, 2)}\n`)
 
 await mkdir(resolve(bundle, 'node'), { recursive: true })
@@ -69,7 +69,7 @@ async function installPrivatePnpm(root) {
   const toolRoot = resolve(root, 'tools/pnpm')
   await mkdir(toolRoot, { recursive: true })
   await writeFile(resolve(toolRoot, 'package.json'), `${JSON.stringify({
-    name: 'flowix-dsh-private-tools', private: true, dependencies: { pnpm: pnpmVersion },
+    name: 'flownote-dsh-private-tools', private: true, dependencies: { pnpm: pnpmVersion },
   }, null, 2)}\n`)
   await run(process.execPath, [
     corepack, `pnpm@${pnpmVersion}`, '--dir', toolRoot, '--ignore-workspace', 'install', '--prod', '--ignore-scripts',

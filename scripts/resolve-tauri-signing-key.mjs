@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process'
 
-const DEFAULT_KEYCHAIN_SERVICE = 'com.flowix.minisign.private-key'
-const DEFAULT_PASSWORD_KEYCHAIN_SERVICE = 'com.flowix.minisign'
-const DEFAULT_PASSWORD_KEYCHAIN_ACCOUNT = 'flowix-shared'
+const DEFAULT_KEYCHAIN_SERVICE = 'com.flownote.minisign.private-key'
+const DEFAULT_PASSWORD_KEYCHAIN_SERVICE = 'com.flownote.minisign'
+const DEFAULT_PASSWORD_KEYCHAIN_ACCOUNT = 'flownote-shared'
 
 /**
  * Populate TAURI_SIGNING_PRIVATE_KEY from macOS Keychain when no explicit

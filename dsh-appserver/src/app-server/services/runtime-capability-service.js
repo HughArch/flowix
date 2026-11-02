@@ -85,7 +85,7 @@ export class RuntimeCapabilityService {
         configure: names.has('model-settings-management'), delete: names.has('model-settings-management'),
       },
       credentials: { read: names.has('credentials-management'), write: names.has('credentials-management') },
-      flowix: { jobs: names.has('jobs'), usage: true, plugins: true, profile: true },
+      flownote: { jobs: names.has('jobs'), usage: true, plugins: true, profile: true },
       goals: { read: true, write: true, clear: true, tokenBudget: false },
       subagents: {
         spawn: names.has('subagent-coordination'), list: names.has('subagent-coordination'), send: names.has('subagent-coordination'),

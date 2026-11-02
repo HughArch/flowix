@@ -8,7 +8,7 @@
 
 ## 文件格式
 
-媒体库采用统一 `flowix.collection` schema v2，详见 [集合索引](COLLECTION-INDEX.md)。集合身份为 `collection.id: col_<uuidv7>`，类型为 `media`；数据范围与记录位于 `payload.dataset`，展示视图位于 `payload.views`。旧 `.lib.yaml`、`.lib.yml` 及 schema v1 文件继续读取。改名不改变集合 ID。
+媒体库采用统一 `flownote.collection` schema v2，详见 [集合索引](COLLECTION-INDEX.md)。集合身份为 `collection.id: col_<uuidv7>`，类型为 `media`；数据范围与记录位于 `payload.dataset`，展示视图位于 `payload.views`。旧 `.lib.yaml`、`.lib.yml` 及 schema v1 文件继续读取。改名不改变集合 ID。
 
 视图默认采用 `waterfall` 布局、空筛选和 `created_at` 倒序排序；新集合的 `dataset.filter` 默认为 `null`，清除全部筛选条件后也回到空状态。集合属性与媒体文件的资源属性各自保存。集合文件目录统一投影到 `collection_documents`，媒体资源仍使用 `media_resources`。
 
@@ -16,7 +16,7 @@
 
 ## 媒体目录与索引
 
-继续使用 `<notebook>/.flowix/notebook.db` 中的 `media_resources` 作为媒体身份目录，不在集合文件复制媒体清单。目录项至少提供：稳定资源 ID、笔记本相对路径、图片/视频类型、文件名、大小、修改时间、首次发现时间、文件指纹和可用的轻量媒体属性。按 `(notebook_id, kind, created_at, id)`、`(notebook_id, relative_path)` 和名称检索建立索引。已有 `created_at` 可直接作为创建时间定义，不将文件系统 birthtime 当作跨平台保证。
+继续使用 `<notebook>/.flownote/notebook.db` 中的 `media_resources` 作为媒体身份目录，不在集合文件复制媒体清单。目录项至少提供：稳定资源 ID、笔记本相对路径、图片/视频类型、文件名、大小、修改时间、首次发现时间、文件指纹和可用的轻量媒体属性。按 `(notebook_id, kind, created_at, id)`、`(notebook_id, relative_path)` 和名称检索建立索引。已有 `created_at` 可直接作为创建时间定义，不将文件系统 birthtime 当作跨平台保证。
 
 列表 API 采用游标分页，数据库端执行资源类型条件，按创建时间和资源 ID 倒序稳定分页；单页默认 60 项，上限 120 项。游标使用最后一个排序键与资源 ID 构成，避免偏移分页在同步变更时重复或漏项。缩略图独立按需获取，不随列表返回原图或视频字节。修改时间/文件指纹构成缩略图缓存键；视频首帧生成沿用已有预览缓存。
 

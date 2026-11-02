@@ -22,8 +22,8 @@ the full `initialize → thread/start → thread/close → shutdown` stdio flow.
 Publish only after both platform archives are present:
 
 ```bash
-FLOWIX_DSH_RELEASE_DIR=.build/releases/dsh \
-FLOWIX_DSH_CHANNEL=macos \
+FLOWNOTE_DSH_RELEASE_DIR=.build/releases/dsh \
+FLOWNOTE_DSH_CHANNEL=macos \
 npm run dsh:publish
 ```
 

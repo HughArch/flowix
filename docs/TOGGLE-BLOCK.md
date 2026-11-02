@@ -115,7 +115,7 @@ toggle: {
 | 正文左侧缩进 / 内边距 | 按 Y 坐标映射到正文行（跳过已收起的行） |
 
 - 容器菜单保留「删除」「背景色」与分栏动作（着重块没有背景色，因为自带底色）。
-- 背景色通过 `flowixBg` 属性作用在 **toggle 节点本身**：拖拽手柄菜单会把整个容器上色，内部行不再单独换色；伪元素绘制整块背景，与段落行背景使用同一套 `--flowix-block-bg-*` 变量。
+- 背景色通过 `flownoteBg` 属性作用在 **toggle 节点本身**：拖拽手柄菜单会把整个容器上色，内部行不再单独换色；伪元素绘制整块背景，与段落行背景使用同一套 `--flownote-block-bg-*` 变量。
 - 删除容器会连同收起的正文一起删除。
 - `block-drag` 的 `fillEmptyContainers()` 兜底零子节点的 `toggle`。
 
@@ -134,14 +134,14 @@ toggle: {
 ### CLI
 
 ```bash
-flowix toggle list <id> --json
-flowix toggle add <id> [--at <line>] [--title <markdown>] \
+flownote toggle list <id> --json
+flownote toggle add <id> [--at <line>] [--title <markdown>] \
   [--content <text> | --file <utf8.md> | --stdin] \
   [--collapsed] [--bg <color>] --json
-flowix toggle set <id> --block <n> [--title <markdown>] \
+flownote toggle set <id> --block <n> [--title <markdown>] \
   [--content <text> | --file <utf8.md> | --stdin] \
   [--open | --collapsed] [--bg <color> | --clear-bg] --json
-flowix toggle remove <id> --block <n> [--delete-content] --json
+flownote toggle remove <id> --block <n> [--delete-content] --json
 ```
 
 - `add` 默认展开（`--collapsed` 收起），不传内容时创建空折叠块。
@@ -166,15 +166,15 @@ flowix toggle remove <id> --block <n> [--delete-content] --json
 ## 测试
 
 ```bash
-npx vitest run app/flowix-web/features/editor/extensions/toggle \
-  app/flowix-web/features/editor/components/drag-context-menu/toggle-target.test.ts \
-  app/flowix-web/features/editor/markdown-parser-regressions.test.ts \
-  app/flowix-web/features/editor/extensions/paste-rules/paste-rules.test.ts
+npx vitest run app/flownote-web/features/editor/extensions/toggle \
+  app/flownote-web/features/editor/components/drag-context-menu/toggle-target.test.ts \
+  app/flownote-web/features/editor/markdown-parser-regressions.test.ts \
+  app/flownote-web/features/editor/extensions/paste-rules/paste-rules.test.ts
 
 cd app
-cargo test -p flowix-core toggle::tests
-cargo test -p flowix-cli --test toggle_e2e
-cargo test -p flowix-cli --test mcp_e2e structured_toggle
+cargo test -p flownote-core toggle::tests
+cargo test -p flownote-cli --test toggle_e2e
+cargo test -p flownote-cli --test mcp_e2e structured_toggle
 ```
 
 - `toggle-markdown.test.ts`：展开 / 收起、未知标记、空块、多段 + 列表、嵌套结构、代码围栏、未闭合围栏。

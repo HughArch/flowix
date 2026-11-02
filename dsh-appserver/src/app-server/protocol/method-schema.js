@@ -61,10 +61,10 @@ export const METHOD_SCHEMAS = Object.freeze({
   'credential/unset': { schedule: 'credential', strings: ['reference'] },
   'runtime/capabilities': { schedule: 'read' },
   'runtime/status': { schedule: 'read' },
-  'flowix/jobs/list': thread,
-  'flowix/session/usage': session,
-  'flowix/plugins/list': { schedule: 'read' },
-  'flowix/runtime/profile': { schedule: 'read' },
+  'flownote/jobs/list': thread,
+  'flownote/session/usage': session,
+  'flownote/plugins/list': { schedule: 'read' },
+  'flownote/runtime/profile': { schedule: 'read' },
 })
 
 function invalid(message, field) { throw new RpcError(ErrorCode.invalidParams, message, { kind: 'invalid_input', field }) }

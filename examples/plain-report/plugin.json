@@ -7,7 +7,7 @@
   "ui": { "placement": "sidebar", "order": 200, "icon": "document" },
   "input": { "fields": [] },
   "tool": {
-    "command": "flowix plugin create plain-report",
+    "command": "flownote plugin create plain-report",
     "input": "stdin",
     "contentType": "text/plain",
     "instructions": "SKILL.md"

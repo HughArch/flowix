@@ -1,0 +1,152 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Flownote Dev",
+  "mainBinaryName": "Flownote Dev",
+  "identifier": "com.flownote-dev.app",
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["flownote-dev"] }
+    }
+  },
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../../.build/web-dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Flownote Dev",
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 15,
+          "y": 25
+        },
+        "width": 1100,
+        "height": 720,
+        "minWidth": 420,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost https: http: data: blob:; media-src 'self' asset: http://asset.localhost https://asset.localhost data: blob:; font-src 'self' asset: http://asset.localhost https://asset.localhost data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost http://asset.localhost https://asset.localhost https:; frame-src 'self' http: https:; worker-src 'self' blob:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**"
+        ]
+      }
+    },
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis/flownote-cli-path.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "md",
+          "markdown"
+        ],
+        "name": "Markdown Document",
+        "description": "Markdown Document",
+        "mimeType": "text/markdown",
+        "role": "Editor"
+      },
+      {
+        "ext": [
+          "txt",
+          "csv",
+          "json",
+          "yaml",
+          "yml",
+          "toml",
+          "xml",
+          "html",
+          "htm",
+          "css",
+          "js",
+          "jsx",
+          "ts",
+          "tsx",
+          "py",
+          "rs",
+          "go",
+          "java",
+          "c",
+          "cpp",
+          "h",
+          "sh",
+          "pdf",
+          "doc",
+          "docx",
+          "xls",
+          "xlsx",
+          "ppt",
+          "pptx",
+          "odt",
+          "ods",
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "webp",
+          "svg",
+          "bmp",
+          "ico",
+          "tif",
+          "tiff",
+          "heic",
+          "mp4",
+          "webm",
+          "mov",
+          "avi",
+          "mkv",
+          "mp3",
+          "wav",
+          "ogg",
+          "flac",
+          "zip",
+          "rar",
+          "7z",
+          "tar",
+          "gz"
+        ],
+        "contentTypes": [
+          "public.data"
+        ],
+        "name": "Flownote Document",
+        "description": "Flownote Document",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/octet-stream"
+      }
+    ],
+    "macOS": {
+      "bundleName": "Flownote Dev",
+      "infoPlist": "Info.plist"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/flownote-cli"
+    ]
+  }
+}

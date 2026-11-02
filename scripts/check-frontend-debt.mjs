@@ -5,7 +5,7 @@ import { extname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
-const ROOT = fileURLToPath(new URL('../app/flowix-web', import.meta.url));
+const ROOT = fileURLToPath(new URL('../app/flownote-web', import.meta.url));
 const LOGGER_FILE = join(ROOT, 'lib/logger.ts');
 
 // Ratchets: lower these numbers as legacy debt is removed. Never raise them to

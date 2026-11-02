@@ -1,0 +1,31 @@
+[package]
+name = "flownote-cli"
+version = "1.5.9"
+description = "Flownote 命令行工具 ── 共享同一份 memo_file 存储, 跟桌面端 watcher 双向同步"
+authors = ["Flownote Contributors"]
+edition.workspace = true
+default-run = "flownote-cli"
+
+[[bin]]
+name = "flownote-cli"
+path = "src/main.rs"
+
+[dependencies]
+flownote-core = { workspace = true }
+flownote-fns = { workspace = true }
+flownote-plugin-runtime = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+nanoid = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+shell-words = { workspace = true }
+rusqlite = { workspace = true }
+
+# Windows 专用: 启动时把 console codepage 切到 UTF-8, 非 Windows 不构建。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

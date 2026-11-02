@@ -1,0 +1,29 @@
+<!-- Flownote brand mark — vector twin of app-icon-source.png (aurora tile).
+     Keep the two in sync: scripts/gen-icon.mjs regenerates every raster icon
+     from app-icon-source.png, and intentionally never writes this file. -->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="tile" x1="110" y1="70" x2="930" y2="1000" gradientUnits="userSpaceOnUse">
+<stop stop-color="#B092F2"/>
+<stop offset="0.5" stop-color="#C793E2"/>
+<stop offset="1" stop-color="#F0A1A9"/>
+</linearGradient>
+<linearGradient id="mark" x1="300" y1="240" x2="730" y2="790" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FFFAEE"/>
+<stop offset="1" stop-color="#FBE7BE"/>
+</linearGradient>
+<radialGradient id="glow" cx="270" cy="200" r="640" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FFFFFF" stop-opacity="0.16"/>
+<stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+</radialGradient>
+<clipPath id="squircle"><rect width="1024" height="1024" rx="230" ry="230"/></clipPath>
+</defs>
+<g clip-path="url(#squircle)">
+<rect width="1024" height="1024" fill="url(#tile)"/>
+<rect width="1024" height="1024" fill="url(#glow)"/>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="132">
+<path d="M348 294V730M348 294H676M348 506H604" stroke="#57407F" stroke-opacity="0.28" transform="translate(32 32)"/>
+<path d="M348 294V730M348 294H676M348 506H604" stroke="url(#mark)"/>
+</g>
+</g>
+</svg>

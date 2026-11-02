@@ -2,9 +2,9 @@
 key: mcz91io5
 ---
 
-# Flowix 声明式插件开发
+# Flownote 声明式插件开发
 
-Flowix 当前支持不执行任意插件代码的声明式插件。插件目录至少包含：
+Flownote 当前支持不执行任意插件代码的声明式插件。插件目录至少包含：
 
 ```text
 my-plugin/
@@ -13,8 +13,8 @@ my-plugin/
 ```
 
 `plugin.json` 使用 `schemaVersion: 2`。`kind: artifact-tool` 插件通过
-标准输入接收最终产物，Flowix Host 负责校验、写入
-`.flowix/plugin/<id>/`，并创建指针文档。第三方插件只需选择已有的
+标准输入接收最终产物，Flownote Host 负责校验、写入
+`.flownote/plugin/<id>/`，并创建指针文档。第三方插件只需选择已有的
 `format`、`parser` 和 `renderer`，无需修改宿主代码；未知组合会在安装前被拒绝。
 
 示例见 [`examples/plain-report`](../examples/plain-report)，字段契约见
@@ -22,17 +22,17 @@ my-plugin/
 
 ## 生命周期
 
-1. 在设置页选择插件目录，Flowix 先读取名称、版本和声明的 Host 能力。
-2. 校验通过后，插件原子地写入 `~/.flowix/plugin/<id>`；同 ID 的新版本走备份和回滚流程。
+1. 在设置页选择插件目录，Flownote 先读取名称、版本和声明的 Host 能力。
+2. 校验通过后，插件原子地写入 `~/.flownote/plugin/<id>`；同 ID 的新版本走备份和回滚流程。
 3. 停用只阻止新的 CLI/Agent 操作，已有产物仍由 Host 读取。
 4. 卸载只删除插件安装目录，不删除笔记本中的产物和指针文档。
 
 CLI 可用命令：
 
 ```text
-flowix plugin list
-flowix plugin describe <id>
-flowix plugin create <id> --notebook <name|id|path>
+flownote plugin list
+flownote plugin describe <id>
+flownote plugin create <id> --notebook <name|id|path>
 ```
 
 直接调用 CLI 时，输入必须是最终内容：思维导图必须恰好一个一级标题，

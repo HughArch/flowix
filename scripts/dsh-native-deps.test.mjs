@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { __test, repairDshNativePackages, verifyDshNativePackages } from './dsh-native-deps.mjs'
 
 test('repairs the exact wrapper/native version instead of the first pnpm candidate', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'flowix-dsh-native-'))
+  const root = await mkdtemp(join(tmpdir(), 'flownote-dsh-native-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const workspace = join(root, 'workspace')
   const runtime = join(root, 'runtime')
@@ -36,7 +36,7 @@ test('repairs the exact wrapper/native version instead of the first pnpm candida
 })
 
 test('rejects placeholders, version mismatches, and wrong native architectures', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'flowix-dsh-native-'))
+  const root = await mkdtemp(join(tmpdir(), 'flownote-dsh-native-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const runtime = join(root, 'runtime')
   await writePackage(join(runtime, 'node_modules/koffi'), wrapperManifest('3.1.1'))

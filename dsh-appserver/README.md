@@ -1,6 +1,6 @@
 # dsh-appserver
 
-独立的 DSH App Server。它直接使用 DSH Cordis 原生服务，为 Flowix 提供接近 Codex app-server 的 Thread、Turn、Item 和管理接口，不依赖旧版 Flowix bridge。
+独立的 DSH App Server。它直接使用 DSH Cordis 原生服务，为 Flownote 提供接近 Codex app-server 的 Thread、Turn、Item 和管理接口，不依赖旧版 Flownote bridge。
 
 ## 架构
 
@@ -32,7 +32,7 @@ Session 只读访问与查询、Thread/Turn 生命周期、附件准入、命令
 - Runtime：`runtime/capabilities`、`runtime/status`
 - Session：`session/flush`、`session/ensure`、`session/prompt`、`session/dispose`、`run/cancel`
 
-`initialize` 返回的 capabilities 根据当前 Cordis Context 中实际存在的服务动态生成。Flowix 自有扩展统一使用 `flowix/*` 命名空间。
+`initialize` 返回的 capabilities 根据当前 Cordis Context 中实际存在的服务动态生成。Flownote 自有扩展统一使用 `flownote/*` 命名空间。
 
 ## Transport
 
@@ -137,11 +137,11 @@ Pending approval 是进程内状态，会在 SSE 重连时回放；持久化的 
     stdio: true
 ```
 
-## Flowix 安装流程
+## Flownote 安装流程
 
-Flowix 启动时只检查本地 `dsh` 命令、Flowix 管理的 DSH Runtime，以及 `DSH_HOME/profiles/flowix` 中的 App Server profile；缺少任何一项都不会自动安装或弹窗。用户可以在 Flowix“偏好设置 → DeepSeek Harness”中打开 DSH 官方安装页面，安装后点“重新检查”。检测到 Runtime 但缺少 profile 时，用户点击“安装 DSH App Server 插件”。
+Flownote 启动时只检查本地 `dsh` 命令、Flownote 管理的 DSH Runtime，以及 `DSH_HOME/profiles/flownote` 中的 App Server profile；缺少任何一项都不会自动安装或弹窗。用户可以在 Flownote“偏好设置 → DeepSeek Harness”中打开 DSH 官方安装页面，安装后点“重新检查”。检测到 Runtime 但缺少 profile 时，用户点击“安装 DSH App Server 插件”。
 
-profile 安装到 `DSH_HOME/profiles/flowix`，其中包含 `dsh-appserver` bundle 和 Flowix Cordis patch。安装后 Flowix 启动该 profile 并通过 stdio JSON-RPC 握手；握手成功后 DSH Agent 才标记为 Ready。`DSH_HOME` 未设置时使用默认 `~/.dsh`。安装过程不会改写 DSH 默认 profile。
+profile 安装到 `DSH_HOME/profiles/flownote`，其中包含 `dsh-appserver` bundle 和 Flownote Cordis patch。安装后 Flownote 启动该 profile 并通过 stdio JSON-RPC 握手；握手成功后 DSH Agent 才标记为 Ready。`DSH_HOME` 未设置时使用默认 `~/.dsh`。安装过程不会改写 DSH 默认 profile。
 
 ## 开发检查
 
@@ -155,4 +155,4 @@ npm run test:runtime-stdio
 npm run test:runtime-http
 ```
 
-`typecheck` 严格检查 TypeScript 协议类型，并对核心 JavaScript、Service、Projection 模块执行模块解析和语法检查。Runtime smoke test 需要本机已安装的 Flowix DSH。
+`typecheck` 严格检查 TypeScript 协议类型，并对核心 JavaScript、Service、Projection 模块执行模块解析和语法检查。Runtime smoke test 需要本机已安装的 Flownote DSH。

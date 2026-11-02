@@ -1,0 +1,108 @@
+import type { AgentTypeKey } from "@/types/agent";
+import { getActiveDocumentDraft } from "@features/document/store/document-session-service";
+import { useDocumentStore } from "@features/document/store/document-store";
+import { CONTEXT_PROMPT_MARKER } from "@features/agent/message";
+import { useNoteStore } from "@features/memo/store/note-store";
+import { useTagStore } from "@features/memo/store/tag-store";
+
+export function normalizeContextValue(
+  value: string | null | undefined,
+): string {
+  return (value ?? "").replace(/\r\n/g, "\n").trim();
+}
+
+function truncateContextContent(content: string, maxLength = 500): string {
+  return Array.from(normalizeContextValue(content))
+    .slice(0, maxLength)
+    .join("");
+}
+
+function getCurrentTaskTag(): string {
+  const memoState = useNoteStore.getState();
+  const tagState = useTagStore.getState();
+  if (memoState.activeFilter !== "tagged" || !tagState.selectedTagId) {
+    return "";
+  }
+  const tag = tagState.tags.find((item) => item.id === tagState.selectedTagId);
+  return normalizeContextValue(tag?.name).replace(/^#+/, "");
+}
+
+function buildContextPromptBlock(currentNoteContent?: string): string {
+  const draft = getActiveDocumentDraft();
+  const notePreview = truncateContextContent(
+    currentNoteContent || draft?.content || "",
+  );
+  const currentTaskTag = getCurrentTaskTag();
+
+  return [
+    CONTEXT_PROMPT_MARKER,
+    ...(currentTaskTag
+      ? [`当前任务标签：#${currentTaskTag} (注：创建新笔记需写入)`]
+      : []),
+    "",
+    "当前笔记内容（前500字）:",
+    notePreview || "none",
+  ].join("\n");
+}
+
+const FLOWNOTE_CLI_PROMPT_BLOCK = [
+  "# flownote CLI",
+  "非交互笔记与插件产物 CLI，--json 取 JSON 输出。",
+  "",
+  '只在显式触发时调:用户说"搜/列/改/删/新建笔记",或给了笔记地址 / 笔记本名要求"看/改/删"。',
+  "如果上下文包含当前任务标签, 创建新笔记时必须在正文写入该 #标签。",
+  "",
+  "- `flownote notebooks` — list all notebooks.",
+  "- `flownote list <notebook>` — list notes in a notebook.",
+  "- `flownote show <address>` — print a note to stdout.",
+  "- `flownote search <query> [-b <notebook>] [-l N]` — full-text search.",
+  "- `flownote edit <address> --old <text> --new <text>` — exact-string replace (always `read` first).",
+  "- `flownote write <address>` (body from stdin) — overwrite a note.",
+  "- `flownote create <notebook>` (body from stdin) — create a note.",
+  "- `flownote delete <address>` — delete a note.",
+  "- `flownote plugin create mindmap --notebook <name|id|path> [--source-note <id|path>] --json` — read final Markmap Markdown from stdin and create a Flownote mindmap document.",
+  "",
+  "仅当用户明确要求生成/创建思维导图时调用 mindmap 工具。先自行整理最终 Markdown（恰好一个一级根标题，分支使用二/三级标题和无序列表），再传给 stdin；不要手工创建 `.plugin-output` 文件。成功后向用户返回 title 和 noteId。",
+].join("\n");
+
+const NATIVE_AGENTS_INSTRUCTION_AGENT_TYPES = new Set<AgentTypeKey>([
+  "codex",
+  "dsh",
+  // 内置助手有原生笔记工具，不需要 flownote CLI 说明块。
+  "flownote",
+]);
+
+export function appendFirstMessageContext(
+  content: string,
+  isFirstMessage: boolean,
+  currentNoteContent?: string,
+  agentType?: AgentTypeKey,
+): string {
+  if (!isFirstMessage) return content;
+  const blocks = [buildContextPromptBlock(currentNoteContent)];
+  if (agentType && !NATIVE_AGENTS_INSTRUCTION_AGENT_TYPES.has(agentType)) {
+    blocks.push(FLOWNOTE_CLI_PROMPT_BLOCK);
+  }
+  return `${content}\n${blocks.join("\n\n")}`;
+}
+
+export function buildUserLlmContent(content: string, directoryOverride?: string): {
+  llmContent: string;
+  systemReminderDirectory?: string;
+  systemReminderDocumentPath?: string;
+} {
+  const memoState = useNoteStore.getState();
+  const documentState = useDocumentStore.getState();
+  const currentDirectory = directoryOverride?.trim() || memoState.selectedNotebook?.path?.trim();
+  if (!currentDirectory) {
+    return { llmContent: content };
+  }
+
+  const currentNotePath = documentState.currentDocumentPath?.trim() || undefined;
+
+  return {
+    llmContent: content,
+    systemReminderDirectory: currentDirectory,
+    systemReminderDocumentPath: currentNotePath,
+  };
+}

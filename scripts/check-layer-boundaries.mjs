@@ -9,13 +9,13 @@
 //      app 是组合根故豁免; 测试文件豁免 ── vi.mock 底层模块是合法用法)
 //
 // 设计: 与 CI "先保证绿灯, 再逐步收紧" 哲学一致。无新依赖, 纯静态扫描。
-// 防"9 处反向依赖"类问题回退 ── 见 Flowix 技术债务清单 P0 前端结构。
+// 防"9 处反向依赖"类问题回退 ── 见 Flownote 技术债务清单 P0 前端结构。
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = fileURLToPath(new URL('../app/flowix-web', import.meta.url));
+const ROOT = fileURLToPath(new URL('../app/flownote-web', import.meta.url));
 
 function walk(dir, acc = []) {
   for (const entry of readdirSync(dir)) {

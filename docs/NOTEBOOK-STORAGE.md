@@ -2,19 +2,19 @@
 
 This document describes the current storage contract for notebooks. The
 Markdown files remain authoritative for note content. SQLite databases and
-other files under `.flowix` hold notebook identity, derived projections, or
-Flowix-owned metadata.
+other files under `.flownote` hold notebook identity, derived projections, or
+Flownote-owned metadata.
 
 ## On-disk layout
 
 ```text
-~/.flowix/
+~/.flownote/
   db/local.db                      Device-local notebook registry
 
 <notebook>/
   *.md                             Note content; source of truth
   attachments/                     Attachment folder, excluded from catalog scans by default
-  .flowix/
+  .flownote/
     notebook.json                 Portable notebook identity manifest
     notebook.db                    Notebook-local catalog and metadata
     view-preferences.json          Notebook file-management preferences
@@ -23,15 +23,15 @@ Flowix-owned metadata.
     plugin/                        Plugin-owned output
 ```
 
-New Flowix-owned notebook data is written under `.flowix/`. A one-time
+New Flownote-owned notebook data is written under `.flownote/`. A one-time
 migration still moves plugin output from `.plugin-output/` into that directory.
 
 ## Database ownership
 
 | Store | Ownership | Contents | Rebuild policy |
 | --- | --- | --- | --- |
-| `~/.flowix/db/local.db` | Device | Notebook registry, workspace mounts and setup state | Preserve; it is not a notebook cache |
-| `<notebook>/.flowix/notebook.db` | Notebook | Path-keyed note and full-text projections, the multidimensional-table listing catalog, media identities and properties | Rebuild note, search, and table-listing projections selectively; preserve user-owned media properties |
+| `~/.flownote/db/local.db` | Device | Notebook registry, workspace mounts and setup state | Preserve; it is not a notebook cache |
+| `<notebook>/.flownote/notebook.db` | Notebook | Path-keyed note and full-text projections, the multidimensional-table listing catalog, media identities and properties | Rebuild note, search, and table-listing projections selectively; preserve user-owned media properties |
 
 The notebook database deliberately remains one file. Its tables have different
 lifecycles, so maintenance code must target the relevant tables and must not
@@ -73,8 +73,8 @@ different visibility semantics and should remain separate.
 - Note identity is `(notebook_id, relative_path)` across storage and APIs.
 - **Media resource** is a separate image or video identity with notebook-owned
   properties. Its ID is independent from Note paths.
-- Frontmatter properties, including `flowix_key`, are user data. The application
-  does not generate, interpret, or use `flowix_key` as a document identity.
+- Frontmatter properties, including `flownote_key`, are user data. The application
+  does not generate, interpret, or use `flownote_key` as a document identity.
 - **File entry** is any filesystem file or directory shown by the browser; it
   has a path but does not automatically need a database identity.
 - Use `registry_db_path()` and `notebook_db_path(id)` when opening a database.

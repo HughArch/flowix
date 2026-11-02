@@ -33,10 +33,10 @@ describe('dsh-appserver protocol', () => {
   it('supports thread start, turn, read, fork and paged turns', async () => {
     const server = new AppServer(null, { adapter: new InMemoryHarnessAdapter() })
     await server.dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize' })
-    const started = await server.dispatch({ jsonrpc: '2.0', id: 2, method: 'thread/start', params: { threadId: 'flowix-local-root' } })
+    const started = await server.dispatch({ jsonrpc: '2.0', id: 2, method: 'thread/start', params: { threadId: 'flownote-local-root' } })
     const root = (started.result as { thread: { id: string } }).thread.id
     expect(root).toMatch(/^session-/)
-    expect(root).not.toBe('flowix-local-root')
+    expect(root).not.toBe('flownote-local-root')
     await server.dispatch({ jsonrpc: '2.0', id: 3, method: 'turn/start', params: { threadId: root, input: 'hello' } })
     const fork = await server.dispatch({ jsonrpc: '2.0', id: 4, method: 'thread/fork', params: { threadId: root, newThreadId: 'child' } })
     const read = await server.dispatch({ jsonrpc: '2.0', id: 5, method: 'thread/read', params: { threadId: 'child' } })

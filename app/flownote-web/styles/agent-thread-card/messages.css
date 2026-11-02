@@ -1,0 +1,1028 @@
+/* ─────────────────────────────────────────────────────────────────
+ * 消息卡片 ── 完全对齐 Agent 面板 message-*.tsx 的视觉与布局。
+ * ─────────────────────────────────────────────────────────────────
+ *
+ * 面板 5 种 role 的视觉规范:
+ *   user       气泡 (bg-muted), 靠右, 圆角 8/16/8/8
+ *   assistant  纯文本, 占满, 无气泡, mt-1 顶部留白
+ *   reasoning  折叠按钮 + 左边竖线 (border-l) + 缩进, 灰字
+ *   tool       单行 flex: icon + 名称 + summary, 无气泡
+ *   end        居中小字, 灰字, 时间戳
+ *
+ * 卡片 base 默认 "无背景无圆角", 5 个 role 修饰类各自按面板
+ * 对应风格覆盖 ── 不再是"一统气泡"模式。 */
+.agent-conversation-surface .agent-thread-card__message {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--agent-message-font-family, var(--font-sans));
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── user: 气泡 + 靠右 ──────────────────────────────────────────
+ * 圆角体系 (与面板 Tailwind token 对应):
+ *   rounded-lg  = 0.5rem = 8px
+ *   rounded-2xl = 1rem   = 16px
+ * 面板 user 圆角: 8px 16px 8px 8px (右上 2xl 最圆, 其它 lg)。
+ * margin-left: auto 在 flex column 容器里把 user 推右 (CSS 端
+ * 替代 row-reverse, 不破坏 assistant 左对齐)。 */
+.agent-conversation-surface .agent-thread-card__message--user {
+  width: 100%;
+  margin-top: 0;
+  max-width: 100%;
+  padding: 0;
+  justify-items: end;
+}
+
+.agent-conversation-surface .agent-thread-card__message-user-bubble {
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px 16px 8px 8px;
+  background: var(--muted);
+}
+
+/* The user bubble adds its own 8px/12px inset around Markdown. Let fenced
+ * blocks use the same outer spacing as assistant pre blocks while retaining
+ * the bubble inset for surrounding prose. */
+.agent-conversation-surface
+  .agent-thread-card__message-user-bubble
+  .agent-thread-card__message-content
+  > pre {
+  margin-right: -12px;
+  margin-left: -12px;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-user-bubble
+  .agent-thread-card__message-content
+  > pre:first-child {
+  margin-top: -8px;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-user-bubble
+  .agent-thread-card__message-content
+  > pre:last-child {
+  margin-bottom: -8px;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  pre,
+.agent-conversation-surface
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  pre
+  *,
+.agent-conversation-surface
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  code,
+.agent-conversation-surface
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  code
+  * {
+  background: transparent !important;
+}
+
+html:not([data-theme="dark"]):not([data-theme="mist"])
+  .agent-conversation-surface
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  pre,
+html:not([data-theme="dark"]):not([data-theme="mist"])
+  .agent-conversation-surface
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  th,
+html:not([data-theme="dark"]):not([data-theme="mist"])
+  .agent-conversation-surface
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  td {
+  border-color: color-mix(in oklch, var(--border) 95%, var(--foreground) 5%);
+}
+
+.agent-conversation-surface .agent-thread-card__message-pi-skill-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-pi-skill-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 28%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--muted-foreground);
+  font-size: 0.76em;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.agent-conversation-surface .agent-thread-card__message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 100%;
+  margin-top: 6px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-attachment {
+  display: inline-flex;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: min(16rem, 100%);
+  height: 1.6em;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0 0.45rem;
+  border: 1px solid color-mix(in oklch, var(--border) 95%, var(--muted) 5%);
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--foreground);
+  cursor: default;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-thread-card__message-attachment-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message-attachment-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-attachment-preview {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 0.16rem;
+  object-fit: cover;
+}
+
+.agent-conversation-surface .agent-thread-card__message-attachment-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-thread-card__message-mode-tag {
+  display: flex;
+  width: fit-content;
+  height: auto;
+  margin: 0 0 5px auto;
+  padding: 4px 8px;
+  border-color: var(--border);
+  border-radius: 7px;
+  background: var(--background);
+  font-size: var(--agent-message-base-font-size, 15px);
+  line-height: 1.2;
+}
+
+/* ── assistant: 纯文本, 无气泡, 顶部 mt-1 留白 ────────────────
+ * 面板 assistant = `text-sm mt-1`, 无背景无圆角, 占满左侧。 */
+.agent-conversation-surface .agent-thread-card__message--assistant {
+  padding: 4px 0 0;
+  color: var(--foreground);
+}
+
+:is([data-theme="dark"], [data-theme="mist"]) .agent-conversation-surface .agent-thread-card__message--assistant,
+:is([data-theme="dark"], [data-theme="mist"]) .agent-conversation-surface .agent-thread-card__message--assistant .agent-thread-card__message-content {
+  color: var(--foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message--system {
+  padding: 2px 0;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message-context-compaction {
+  align-self: flex-start;
+  padding-top: 8px;
+  font-size: calc(
+    var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1) * 0.9
+  );
+  line-height: 1.4;
+  font-style: italic;
+}
+
+.agent-conversation-surface .agent-thread-card__message-context-compaction-summary {
+  margin-top: 4px;
+  font-style: normal;
+}
+
+/* DSH goal prompts are internal model-control messages. They remain visible
+ * as a small timeline status row, while their long instructions are removed
+ * by the DSH history projection before this renderer is reached. */
+.agent-conversation-surface .agent-thread-card__message--goal-control {
+  align-self: flex-start;
+  padding: 2px 0;
+  color: var(--muted-foreground);
+  font-size: calc(
+    var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1) * 0.86
+  );
+  line-height: 1.35;
+}
+
+.agent-conversation-surface .agent-thread-card__message-goal-control {
+  font-style: italic;
+}
+
+.agent-conversation-surface .agent-thread-card__message--goal-complete {
+  color: var(--foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message--goal-blocked {
+  color: var(--destructive);
+}
+
+/* DSH slash-command transcript rows are durable command projections, not
+ * ordinary model messages. Keep the visual treatment compact while retaining
+ * the source marker so commands from other agents cannot be confused with
+ * this provider's controls. */
+.agent-conversation-surface .agent-thread-card__message--dsh-command {
+  font-size: calc(
+    var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1) * 0.9
+  );
+}
+
+.agent-conversation-surface .agent-thread-card__message--dsh-command-loading {
+  opacity: 0.72;
+}
+
+.agent-conversation-surface .agent-thread-card__message--dsh-command-result {
+  align-self: flex-start;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message--dsh-command-prompt {
+  border: 1px solid color-mix(in srgb, var(--brand) 28%, transparent);
+}
+
+/* Codex-native slash commands are product-owned user rows. They use the same
+ * compact treatment as DSH command rows, but keep a distinct provider badge. */
+.agent-conversation-surface .agent-thread-card__message--codex-command {
+  font-size: calc(
+    var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1) * 0.9
+  );
+}
+
+.agent-conversation-surface .agent-thread-card__message--codex-command-loading {
+  opacity: 0.72;
+}
+
+.agent-conversation-surface .agent-thread-card__message-dsh-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-bottom: 2px;
+  color: var(--muted-foreground);
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.agent-conversation-surface .agent-thread-card__message-codex-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-bottom: 2px;
+  color: var(--muted-foreground);
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.agent-conversation-surface .agent-thread-card__message-dsh-result {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-actions {
+  display: flex;
+  position: relative;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  min-height: 22px;
+  margin-top: 2px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 150ms ease,
+    visibility 0s linear 150ms;
+}
+
+.agent-conversation-surface .agent-thread-card__message-fork-confirm {
+  display: flex;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 26px;
+  z-index: 70;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 120px;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--border-popup);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 0 24px -3px rgb(0 0 0 / 24%);
+  transform-origin: bottom left;
+  animation: agent-thread-card-fork-confirm-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.agent-conversation-surface .agent-thread-card__message-fork-confirm-button,
+.agent-conversation-surface .agent-thread-card__message-fork-cancel-button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.agent-conversation-surface .agent-thread-card__message-fork-loading-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  --flownote-spin-duration: 0.8s;
+}
+
+.agent-conversation-surface .agent-thread-card__message-fork-confirm-button {
+  gap: 6px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-fork-confirm-button:hover,
+.agent-conversation-surface .agent-thread-card__message-fork-confirm-button:focus-visible,
+.agent-conversation-surface .agent-thread-card__message-fork-cancel-button:hover,
+.agent-conversation-surface .agent-thread-card__message-fork-cancel-button:focus-visible {
+  background: var(--brand);
+  color: var(--primary-foreground);
+}
+
+@keyframes agent-thread-card-fork-confirm-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-conversation-surface .agent-thread-card__message-fork-confirm {
+    animation: none;
+  }
+}
+
+.agent-conversation-surface .agent-thread-card__message:hover .agent-thread-card__message-actions,
+.agent-conversation-surface .agent-thread-card__message:focus-within .agent-thread-card__message-actions,
+.agent-conversation-surface .agent-thread-card__message--forking .agent-thread-card__message-actions {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.agent-conversation-surface .agent-thread-card__message-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  box-shadow: none;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.agent-conversation-surface .agent-thread-card__message-action:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.agent-conversation-surface .agent-thread-card__message-action svg {
+  width: 12px;
+  height: 12px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-time,
+.agent-conversation-surface .agent-thread-card__message-duration {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 22px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content,
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
+  .agent-thread-card__message--user
+  .agent-thread-card__message-content
+  *,
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
+  .agent-thread-card__message--assistant
+  .agent-thread-card__message-content,
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
+  .agent-thread-card__message--assistant
+  .agent-thread-card__message-content
+  * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ── reasoning: 可折叠 ── 对齐面板 message-reasoning 布局 ─────────
+ * 面板结构:
+ *   <div flex gap-3>
+ *     <div flex-col gap-1 w-full>
+ *       <button> {ChevronDown|Right + "思考中/思考完成"} </button>
+ *       {!reasoningCollapsed && <div pl-4 ml-1.5 border-l> ...content </div>}
+ *     </div>
+ *   </div>
+ *
+ * 卡片版 (per-message 折叠态, 不走全局 store):
+ *   .__message--reasoning { gap: 4px }
+ *     .__message-reasoning-header (button) { flex 排 caret + label,
+ *       hover 反馈用 var(--muted-foreground) → var(--agent-foreground) }
+ *     .__message-reasoning-body { pl-12px + border-l + mt-4px }
+ *     .__message--reasoning-collapsed .__message-reasoning-body { display: none }
+ * 数值: pl-4 = 12px (这里 12px 与 6px ml-1.5 视觉接近, 同时让缩进在
+ * 卡片宽度下不至于挤掉内容), border-l = 2px (卡片小尺寸下更可见)。 */
+.agent-conversation-surface .agent-thread-card__message--reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message-reasoning-header {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  padding: 2px 4px 2px 0;
+  margin-left: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: calc(var(--agent-message-base-font-size, 15px) * 0.9); /* text-xs */
+  font-weight: 500;
+  line-height: 1.1;
+  cursor: pointer;
+  /* hover 反馈改为纯字色变化 ── reasoning 折叠按钮嵌入在消息流里,
+   * 视觉权重本就低, 鼠标悬停时给一个"高亮"色就够了, 加背景块会
+   * 跟上下相邻消息之间制造色块边界, 反而打断阅读节奏。颜色用
+   * 前景色 var(--foreground) ── 比 --muted-foreground 对比度高,
+   * 鼠标移上去按钮文本"亮起来"的暗示清晰。 */
+  transition: color 150ms ease;
+}
+
+.agent-conversation-surface .agent-thread-card__message-reasoning-header:hover {
+  color: var(--foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message-reasoning-header svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: currentColor;
+  transition: transform 150ms ease;
+}
+
+.agent-conversation-surface .agent-thread-card__message-reasoning-body {
+  padding: 2px 0 4px 12px;
+  margin-left: 5px;
+  border-left: 1px solid var(--border);
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message--reasoning-collapsed
+  .agent-thread-card__message-reasoning-body {
+  display: none;
+}
+
+/* ── tool: 单行 flex: icon + 名称 + summary ─────────────────────
+ * 面板 message-tool 容器 = `w-full pr-1 py-1.5` 内部
+ *   `flex items-center gap-2`:
+ *     - ToolIcon (h-3.5 w-3.5 text-muted-foreground, 按 toolName 切换)
+ *     - 工具名 (text-sm text-agent-foreground) ── 走 getToolLabel
+ *       做中英映射, e.g. read → 读取, bash → 执行命令
+ *     - summary (text-xs font-mono text-muted-foreground) ── pathLike 字段
+ *
+ * 卡片场景没有 React 组件, 改用内联 SVG 路径 ── toolName → 图标
+ * 走 features/agent/message/tools 单源 registry (getToolIconPath),
+ * 与面板 (inline SVG 同样 path) 共用 TOOL_ICON_PATHS regular weight 数据,
+ * 视觉完全一致 (同样 14×14 渲染, 同样 muted-foreground 颜色)。未命中 → terminal。 */
+.agent-conversation-surface .agent-thread-card__message--tool {
+  display: flex;
+  flex-wrap: nowrap;
+  /* 图标容器固定为 18px，工具名/摘要首行也固定为 18px；
+   * 用顶部对齐保证它们共享同一条首行轨道。baseline 会以各自
+   * 的字体基线计算位置，配合 18.9px 的默认实际行高容易出现约 1px 偏移。 */
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
+  line-height: 18px;
+}
+
+/* ── 连续工具组: 独立的两级折叠容器 ─────────────────────────────
+ * header 是一级折叠; 已完成工具区域在展开时显示, 每个 tool row 仍保留
+ * 自己的输入展开按钮; 进行中工具区域始终位于组尾并保持单行。 */
+.agent-conversation-surface .agent-thread-card__tool-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-family: var(--agent-message-font-family, var(--font-sans));
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-left: 4px;
+  padding-right: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-header {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 6px 2px 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
+  line-height: 18px;
+  cursor: pointer;
+  transition: color 150ms ease;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-header:hover {
+  color: var(--brand);
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group--expanded
+  .agent-thread-card__tool-group-header {
+  color: var(--brand);
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-toggle,
+.agent-conversation-surface .agent-thread-card__message-tool-toggle {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  line-height: 18px;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-toggle {
+  color: currentColor;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-toggle svg,
+.agent-conversation-surface .agent-thread-card__message-tool-toggle svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  transition: transform 150ms ease;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-running-loading-icon {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+/* The spinner is 12px visually, but its flex item must use the same 18px
+ * first-line track as the tool icon and label. Without this wrapper the
+ * spinner is aligned by its own box and appears a few pixels too high. */
+.agent-conversation-surface .agent-thread-card__tool-group-running-loading-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  line-height: 18px;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-header-loading-icon {
+  margin-left: auto;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-header:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--foreground) 45%, transparent);
+  outline-offset: 1px;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-completed-tools {
+  display: none;
+  min-width: 0;
+  padding-top: 6px;
+  padding-left: 24px;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group--expanded
+  .agent-thread-card__tool-group-completed-tools {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-running-tools {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 24px;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__tool-group-running-tool
+  .agent-thread-card__message-tool-icon-wrap {
+  /* 与结束态工具行保持一致：工具 icon 顶部对齐。 */
+  align-self: flex-start;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group-running-tool {
+  display: flex;
+  align-items: flex-start;
+  padding: 6px 0;
+}
+
+.agent-conversation-surface .agent-thread-card__tool-group--expanded
+  .agent-thread-card__tool-group-completed-tools
+  .agent-thread-card__message {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-content {
+  display: flex;
+  position: relative;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  gap: 4px;
+  line-height: 18px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 18px;
+  gap: 4px;
+  line-height: 18px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-toggle {
+  margin-left: auto;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-toggle:hover {
+  background: color-mix(in srgb, var(--muted-foreground) 10%, transparent);
+  color: var(--foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-toggle .agent-thread-card__chevron-icon {
+  width: 13px;
+  height: 13px;
+  transition: transform 150ms ease;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__message-tool-toggle
+  .agent-thread-card__chevron-icon {
+  transform: rotate(180deg);
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--foreground) 45%, transparent);
+  outline-offset: 1px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+/* 工具图标占用与首行一致的 18px 轨道。外层固定高度并自行居中，
+ * 避免直接放置 14px SVG 时受多行参数/基线布局影响而上下偏移。 */
+.agent-conversation-surface .agent-thread-card__message-tool-icon-wrap {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  flex: 0 0 auto;
+  line-height: 18px;
+}
+
+/* 工具名视觉规格: __message-tool-name + __command-name 共享 ──
+ * 颜色 (前景) + 字重 (500) + 横向布局 (auto) 同步,
+ * command-name 额外保留 45% 宽度上限 + ellipsis 截断。 */
+.agent-conversation-surface .agent-thread-card__message-tool-name,
+.agent-conversation-surface .agent-thread-card__message-tool-concrete-name,
+.agent-conversation-surface .agent-thread-card__command-name {
+  flex: 0 0 auto;
+  color: var(--foreground);
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-concrete-name {
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* tool-name 不需要水平截断, command-name 需要 ——
+ * flex/color/weight 已在上一规则声明, 此处仅追加独有的截断属性 */
+.agent-conversation-surface .agent-thread-card__command-name {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-thread-card__command-operator {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: var(--agent-message-font-family, var(--font-sans));
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-summary--link {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-summary--link:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-input {
+  display: none;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 4px 0;
+  overflow: visible;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-payload {
+  display: none;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.agent-conversation-surface .agent-thread-card__message-tool-payload-label {
+  display: block;
+  padding-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__message-tool-payload {
+  display: block;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__message-tool-input {
+  display: block;
+}
+
+.agent-conversation-surface .agent-thread-card__command-list {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  line-height: 18px;
+  /* 字体: 与工具描述信息统一为 sans (默认), 删除原先的 mono, 让命令列表跟其它工具描述在视觉上无法区分 */
+}
+
+.agent-conversation-surface .agent-thread-card__command-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-thread-card__command-list--details {
+  display: none;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__command-list--details {
+  width: 100%;
+  display: block;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  overflow: visible;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__command-line {
+  width: 100%;
+  overflow: visible;
+  white-space: normal;
+}
+
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__command-name,
+.agent-conversation-surface
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__command-args-inline {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-conversation-surface .agent-thread-card__command-list--nested {
+  max-width: calc(100% - 10px);
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.agent-conversation-surface .agent-thread-card__command-item {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  margin: 0;
+  padding: 1px 0;
+  line-height: 18px;
+}
+
+.agent-conversation-surface .agent-thread-card__command-line {
+  display: flex;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 18px;
+  /* 字体/字号/行高 全部走 inherit (跟工具描述信息统一 sans 视觉) */
+}
+
+/* command 输入信息视觉对齐工具描述 (tool-name / tool-summary), 字体一律 inherit (sans) */
+
+.agent-conversation-surface .agent-thread-card__command-args-inline,
+.agent-conversation-surface .agent-thread-card__command-env,
+.agent-conversation-surface .agent-thread-card__command-more {
+  color: var(--muted-foreground);
+  line-height: 18px;
+}
+
+.agent-conversation-surface .agent-thread-card__command-args-inline {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-thread-card__command-env,
+.agent-conversation-surface .agent-thread-card__command-more {
+  flex: 0 0 auto;
+}
+
+.agent-conversation-surface .agent-thread-card__command-env {
+  margin-right: 4px;
+}

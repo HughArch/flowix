@@ -1,0 +1,108 @@
+[package]
+name = "flownote-desktop"
+version.workspace = true
+description = "Flownote - AI Note Taking App"
+authors = ["you"]
+edition.workspace = true
+default-run = "flownote-desktop"
+
+[lib]
+name = "flownote_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+flownote-core = { workspace = true }
+flownote-plugin-runtime = { workspace = true }
+flownote-fns = { workspace = true }
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "unstable", "tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-process = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+rusqlite = { workspace = true }
+notify = "6.0"
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+chrono = { workspace = true }
+dirs = { workspace = true }
+walkdir = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+thiserror = { workspace = true }
+# TLS 用 rustls ── native-tls 在 Android/Linux 落到 OpenSSL, 无法交叉编译;
+# rustls 全平台一致, native-roots 保住系统 CA 语义。
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "charset",
+    "http2",
+    "macos-system-configuration",
+    "blocking",
+    "stream",
+] }
+async-trait = "0.1"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "ico", "tiff"] }
+nanoid = { workspace = true }
+tempfile = { workspace = true }
+fs2 = { workspace = true }
+filetime = "0.2"
+dunce = { workspace = true }
+uuid = { workspace = true }
+url = "2"
+hostname = "0.4"
+sha2 = { workspace = true }
+zip = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+semver = { workspace = true }
+minisign-verify = { workspace = true }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+flownote-installer-helper = { path = "../flownote-installer-helper" }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_UI_Input", "Win32_UI_WindowsAndMessaging"] }
+webview2-com = "0.38"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-app-kit", "WKWebView"] }
+
+[target.'cfg(unix)'.dependencies]
+# Used by `kill_child_tree` to signal the whole process group so external-CLI
+# grandchildren (Node CLIs spawn their own shells/tools) are reaped on stop.
+# tokio already pulls libc in on Unix, so this adds no new download.
+libc = "0.2"
+
+# ── 桌面专属依赖 ── 移动端(Android/iOS)不参与编译 ─────────────────────────
+# - single-instance / updater: 插件只有桌面实现; 移动端更新走应用内 APK 下载
+# - window-vibrancy: 仅 window_material.rs 的 windows/macOS cfg 分支使用
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = { workspace = true }
+# 开机自启动 ── Windows 写注册表 Run 键, macOS 走 LaunchAgent。
+# 锁 2.5.1: 2.6+ 要求 tauri >= 2.12, 会连带把 windows/webview2-com 栈顶到
+# 0.62/0.39, 与仓库锁定的 windows 0.61 + webview2-com 0.38 代码类型冲突。
+tauri-plugin-autostart = "=2.5.1"
+# 桌面: 复用系统根证书 (企业代理 / 自签证书可用)。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+# 移动端: rustls-native-certs 在 Android 上取不到系统 CA 存储 (字体下载
+# 与设备注册均报 "error sending request"), 改用内置 webpki 根证书。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+window-vibrancy = "0.6"

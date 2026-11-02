@@ -8,8 +8,8 @@ import { applyTauriSigningKey } from './resolve-tauri-signing-key.mjs'
 const repoRoot = path.resolve(import.meta.dirname, '..')
 // Pi is part of every production desktop package. Keep --with-pi accepted for
 // backwards compatibility; it is no longer a product feature switch.
-delete process.env.FLOWIX_BUNDLE_PI
-delete process.env.FLOWIX_DEV_MODE
+delete process.env.FLOWNOTE_BUNDLE_PI
+delete process.env.FLOWNOTE_DEV_MODE
 applyTauriSigningKey()
 const npmEntrypoint = process.env.npm_execpath
 const tauriEntrypoint = path.resolve(repoRoot, 'node_modules/@tauri-apps/cli/tauri.js')
@@ -37,13 +37,13 @@ if (!npmEntrypoint) {
   throw new Error('Production build must be started through npm run tauri:build:prod')
 }
 if (
-  process.env.FLOWIX_ALLOW_UNSIGNED !== '1'
+  process.env.FLOWNOTE_ALLOW_UNSIGNED !== '1'
   && !process.env.TAURI_SIGNING_PRIVATE_KEY?.trim()
   && !process.env.TAURI_SIGNING_PRIVATE_KEY_PATH?.trim()
 ) {
   throw new Error(
-    'TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH is required for signed Flowix updater artifacts. '
-    + 'Set FLOWIX_ALLOW_UNSIGNED=1 only for local unsigned packages.',
+    'TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH is required for signed Flownote updater artifacts. '
+    + 'Set FLOWNOTE_ALLOW_UNSIGNED=1 only for local unsigned packages.',
   )
 }
 if (process.env.TAURI_SIGNING_PRIVATE_KEY_PATH?.trim()
@@ -54,11 +54,11 @@ if (process.env.TAURI_SIGNING_PRIVATE_KEY_PATH?.trim()
 const cargoManifest = readFileSync(path.resolve(repoRoot, 'app/Cargo.toml'), 'utf8')
 const cargoVersion = /^version\s*=\s*"([^"]+)"/mu.exec(cargoManifest)?.[1]
 const tauriConfig = JSON.parse(readFileSync(
-  path.resolve(repoRoot, 'app/flowix-desktop/tauri.conf.json'), 'utf8'))
+  path.resolve(repoRoot, 'app/flownote-desktop/tauri.conf.json'), 'utf8'))
 const packageVersion = JSON.parse(readFileSync(path.resolve(repoRoot, 'package.json'), 'utf8')).version
 if (!cargoVersion || cargoVersion !== tauriConfig.version || cargoVersion !== packageVersion) {
   throw new Error(
-    `Flowix version mismatch: Cargo=${cargoVersion ?? '<missing>'}, ` +
+    `Flownote version mismatch: Cargo=${cargoVersion ?? '<missing>'}, ` +
     `Tauri=${tauriConfig.version ?? '<missing>'}, package=${packageVersion ?? '<missing>'}`,
   )
 }
@@ -108,9 +108,9 @@ const tauriTargets = targetPlatform === 'darwin'
 const buildStartedAt = Date.now()
 for (const target of tauriTargets) {
   if (target) {
-    process.env.FLOWIX_PI_TARGET_ARCH = target.startsWith('aarch64-') ? 'arm64' : 'x64'
+    process.env.FLOWNOTE_PI_TARGET_ARCH = target.startsWith('aarch64-') ? 'arm64' : 'x64'
   } else {
-    delete process.env.FLOWIX_PI_TARGET_ARCH
+    delete process.env.FLOWNOTE_PI_TARGET_ARCH
   }
   const configPath = run(
     process.execPath,
@@ -125,7 +125,7 @@ for (const target of tauriTargets) {
 
 const freshArtifacts = collectFiles(cargoTargetDir)
   .filter(file => statSync(file).mtimeMs >= buildStartedAt - 2_000)
-const requireUpdaterArtifacts = process.env.FLOWIX_ALLOW_UNSIGNED !== '1'
+const requireUpdaterArtifacts = process.env.FLOWNOTE_ALLOW_UNSIGNED !== '1'
 if (targetPlatform === 'win32') {
   const installer = requireArtifact(
     freshArtifacts,

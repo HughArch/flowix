@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "com.flownote.app",
+  "app": {
+    "windows": [
+      {
+        "title": "Home",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 15,
+          "y": 25
+        },
+        "width": 1100,
+        "height": 720,
+        "minWidth": 420,
+        "minHeight": 600,
+        "transparent": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": [
+      "dmg"
+    ],
+    "macOS": {
+      "infoPlist": "Info.plist"
+    }
+  }
+}

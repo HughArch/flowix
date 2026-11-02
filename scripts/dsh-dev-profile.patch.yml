@@ -1,4 +1,4 @@
-# Flowix dev profile: keep the upstream agent runtime, but let dsh-appserver
+# Flownote dev profile: keep the upstream agent runtime, but let dsh-appserver
 # own the stdio JSON-RPC surface.
 - id: typert
   disabled: true
@@ -32,4 +32,4 @@
         approval: never
 - id: dsh-appserver-extension
   config:
-    stdio: !!js process.env.FLOWIX_DSH_APPSERVER_STDIO ?? false
+    stdio: !!js process.env.FLOWNOTE_DSH_APPSERVER_STDIO ?? false

@@ -1,7 +1,7 @@
-# Flowix 性能审查 · 独立复核（肉眼可见问题）
+# Flownote 性能审查 · 独立复核（肉眼可见问题）
 
 审查日期：2026-10-19
-范围：`app/flowix-web`、`app/flowix-desktop`、`app/flowix-core`
+范围：`app/flownote-web`、`app/flownote-desktop`、`app/flownote-core`
 方法：纯静态阅读 + 当前构建产物（`.build/web-dist`，2026-10-19 21:58）度量。**没有运行时 profiling**，所有结论都附代码位置，可逐条复核。
 
 本文与 `docs/PERFORMANCE-REVIEW.md` 的关系：那份文档是修复流水账（八批）。本文是一次独立复核，不重复已修项，只回答两件事——**哪些旧结论还成立**、**哪些问题还没被记录**。
@@ -61,10 +61,10 @@ styles/index.css 一次 @import 了：
 | 笔记内容 | worker 结果 |
 | --- | --- |
 | 普通 markdown、管道表格、公式、任务列表 | 通过 |
-| `<!-- flowix:table-reference ... -->` | 通过（扩展 tokenizer 已消费） |
-| `<!-- flowix:media-library-reference ... -->` | 通过（同上） |
-| `<!-- flowix:table ... -->` / `<!-- flowix:media ... -->` | 通过（同上） |
-| **AI 对话卡片**（`<!-- flowix:agent-thread-card ... -->` 与旧 `::agent-thread-card{`） | **拒收**：worker 注册表里没有该扩展 |
+| `<!-- flownote:table-reference ... -->` | 通过（扩展 tokenizer 已消费） |
+| `<!-- flownote:media-library-reference ... -->` | 通过（同上） |
+| `<!-- flownote:table ... -->` / `<!-- flownote:media ... -->` | 通过（同上） |
+| **AI 对话卡片**（`<!-- flownote:agent-thread-card ... -->` 与旧 `::agent-thread-card{`） | **拒收**：worker 注册表里没有该扩展 |
 | **任意原始 HTML**：`<div>` `<span>` `<br>` `<img>` `<!-- 普通注释 -->` | **拒收**：lexer 产出 `html` token |
 
 **代码链三处**
@@ -86,13 +86,13 @@ styles/index.css 一次 @import 了：
 
 **修复：已落地（2026-10-19），三步**
 
-1. **补 3 个节点**：`createMarkdownParserExtensions()` 缺 `TableRow / TableHeader / TableCell`，而 `FlowixTable` 的 content 表达式要求 `tableRow+`，所以 worker 的 HTML 路径一建 schema 就抛 `No node type or group 'tableRow' found`。补上后 `<div>/<span>/<br>/<img>/<!-- -->` 全部能在 worker 里解析，输出与主线程路径**逐字节一致**。
+1. **补 3 个节点**：`createMarkdownParserExtensions()` 缺 `TableRow / TableHeader / TableCell`，而 `FlownoteTable` 的 content 表达式要求 `tableRow+`，所以 worker 的 HTML 路径一建 schema 就抛 `No node type or group 'tableRow' found`。补上后 `<div>/<span>/<br>/<img>/<!-- -->` 全部能在 worker 里解析，输出与主线程路径**逐字节一致**。
 2. **把卡片 spec 搬进 worker**：新增 `agent-thread-card-markdown-spec.ts`，把 `markdownTokenizer / parseMarkdown / renderMarkdown` 从 NodeView 文件里抽出来，主编辑器用 `...agentThreadCardMarkdownSpec` 复用（`table-reference-node.tsx:302` 已是这个模式），worker 注册 `AgentThreadCardMarkdownExtension`。新旧两种卡片写法都能产出 `agentThreadCard` 节点。
 3. **"接受过滤"兜底**：删掉两个 `throw`，worker 改为 `try { parse } catch { 把 html token 折成纯文本重试一次 }`；再失败才 `postMessage({ ok: false })`，不会静默降级到主线程。
 
 做完的效果：**只有一条解析路径**，所有笔记都在 worker 里解析，主线程不再承担整篇 markdown → JSON；同时删掉了每次打开都多跑一遍的 `containsRawHtmlToken` 预检查（固定省一半词法开销）。
 
-验证（2026-10-19）：`tsc --noEmit` 通过；新增 `markdown-parser-regressions.test.ts` 9 项全通过（新/旧卡片、块级与行内 HTML、`<br>`、`<img>`、注释、HTML 表格、flowix 引用标记）；`agent-thread-card.test.ts` 的 8 项失败在改动前后完全一致，属既有问题。
+验证（2026-10-19）：`tsc --noEmit` 通过；新增 `markdown-parser-regressions.test.ts` 9 项全通过（新/旧卡片、块级与行内 HTML、`<br>`、`<img>`、注释、HTML 表格、flownote 引用标记）；`agent-thread-card.test.ts` 的 8 项失败在改动前后完全一致，属既有问题。
 
 ### 2.2 解析是二次复杂度（已定位并修复）
 
@@ -108,7 +108,7 @@ CPU profile（96 KB / 1157 块，连续 8 次 lex，合计 835 ms）定位到两
 **修法（已落地）**
 
 1. **列表 tokenizer 加 O(1) 守卫**（`features/editor/markdown-list-tokenizer.ts`）：`orderedList` / `taskList` 先在 2 KB 前缀上判断这行是不是列表，不是就直接返回。`StarterKit` 关掉 `bulletList` / `orderedList`，改注册带守卫的版本——必须替换而不是叠加，`extend` 之后若原扩展仍在注册表里会跑两遍（实测 49 KB 从 35 ms 变 58 ms）。
-2. **`start()` 有界化**（`features/editor/markdown-tokenizer-start.ts`）：新增 `scanHead / boundedIndexOf / boundedSearch`，把扫描限制在 2048 字符前缀。改了 9 个块级 tokenizer：math、web-card、flowix-table（`flowix:table` / `table-widths` 两处）、table-reference、media-library-reference、video、image、agent-thread-card。**行内 tokenizer 没动**（`strong` / `highlight` / `noteReference` / `fileAttachment`），它们的 `src` 是段落文本，长度本来有限，截断反而会造成长段落里标记失效。
+2. **`start()` 有界化**（`features/editor/markdown-tokenizer-start.ts`）：新增 `scanHead / boundedIndexOf / boundedSearch`，把扫描限制在 2048 字符前缀。改了 9 个块级 tokenizer：math、web-card、flownote-table（`flownote:table` / `table-widths` 两处）、table-reference、media-library-reference、video、image、agent-thread-card。**行内 tokenizer 没动**（`strong` / `highlight` / `noteReference` / `fileAttachment`），它们的 `src` 是段落文本，长度本来有限，截断反而会造成长段落里标记失效。
 
 **实测（隔离进程 + 取中位数，`scripts/bench-markdown-parse.mjs`）**
 
@@ -193,7 +193,7 @@ emitStartup();
 
 `features/shell/components/status-bar/status-bar.tsx:174-196`：只要云同步在进行，就 `setInterval(refreshPendingOperationCount, 1000)`。
 
-对应后端是**同步命令**（Flowix Cloud 同步已移除，此条仅作历史记录）。
+对应后端是**同步命令**（Flownote Cloud 同步已移除，此条仅作历史记录）。
 
 建议：改成后端在计数变化时 `emit`，前端订阅；短期至少把命令改 `async + spawn_blocking`，并把 1s 拉长到 3~5s。
 
@@ -205,7 +205,7 @@ emitStartup();
 | --- | --- | --- | --- |
 | 1 | 入口 CSS 全量阻塞首屏（编辑器/表格/PDF/5 套主题） | `styles/index.css:15-46` | 442 KB / 63 KB gzip，未拆分 |
 | 2 | `zh-CN` 文案 eager 进主包 | `lib/i18n/locales.ts:1`（126 KB 源文件） | 未改；en-US 已动态加载，默认语言仍在全量 |
-| 3 | 目录分页每页完整 `readdir` | `flowix-desktop/src/commands/document_list.rs:349` | 仅优化了排序（`select_nth_unstable_by`，`:301/:316`），I/O 未减少 |
+| 3 | 目录分页每页完整 `readdir` | `flownote-desktop/src/commands/document_list.rs:349` | 仅优化了排序（`select_nth_unstable_by`，`:301/:316`），I/O 未减少 |
 | 4 | 拖拽每帧全文档扫描 + 逐项 `getBoundingClientRect` | `features/editor/extensions/block-drag.ts:532-548` | 未改；`doc.descendants` 内逐项取 rect，每个 pointer 移动周期全量重算 |
 | 5 | 巨型组件（状态广度） | `memo-list.tsx` 30 个 `useState` / 1,586 行；`table-document-view.tsx` 49 个 `useState` / 3,606 行 | 虚拟化把代价限制在"可见行"，但容器自身的 render body 仍整体重跑 |
 | 6 | 双图标库并存 | 61 文件用 `@phosphor-icons/react`，99 文件用 `lucide-react` | 未收敛 |

@@ -10,7 +10,7 @@ import { verifyDshNativePackages } from './dsh-native-deps.mjs'
 if (process.platform !== 'win32') throw new Error('Windows DSH production packages must be packaged on Windows')
 const repo = resolve(import.meta.dirname, '..')
 const version = getDshReleaseVersion()
-const minFlowixVersion = process.env.FLOWIX_VERSION || '1.3.2'
+const minFlownoteVersion = process.env.FLOWNOTE_VERSION || '1.3.2'
 const sourceRoot = resolve(repo, '.build/dsh-runtime-bundle/node24-windows-x64')
 const stage = resolve(repo, '.build/dsh-prod-stage/node24-windows-x64')
 const out = resolve(repo, '.build/releases/dsh')
@@ -25,14 +25,14 @@ await verifyDshNativePackages(resolve(stage, 'runtime'), {
   platform: 'win32',
   arch: 'x64',
 })
-const profile = resolve(stage, 'profile/flowix')
+const profile = resolve(stage, 'profile/flownote')
 await mkdir(resolve(profile, 'node_modules'), { recursive: true })
 await cp(resolve(repo, 'dsh-appserver'), resolve(profile, 'node_modules/dsh-appserver'), { recursive: true, filter: p => !p.includes('node_modules') })
-await cp(resolve(repo, 'dsh-flowix-memory'), resolve(profile, 'node_modules/dsh-flowix-memory'), { recursive: true, filter: p => !p.includes('node_modules') })
+await cp(resolve(repo, 'dsh-flownote-memory'), resolve(profile, 'node_modules/dsh-flownote-memory'), { recursive: true, filter: p => !p.includes('node_modules') })
 await cp(resolve(repo, 'scripts/dsh-dev-profile.patch.yml'), resolve(profile, 'cordis.patch.yml'))
 await writeFile(resolve(profile, 'package.json'), `${JSON.stringify({
-  name: 'dsh-profile-flowix', private: true,
-  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flowix-memory'] } },
+  name: 'dsh-profile-flownote', private: true,
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-appserver', 'dsh-flownote-memory'] } },
 }, null, 2)}\n`)
 
 const runtimeBuild = JSON.parse(await readFile(resolve(stage, 'runtime-build.json'), 'utf8'))
@@ -50,7 +50,7 @@ const nodePath = resolve(stage, 'node/node.exe')
 run(nodePath, [resolve(repo, 'scripts/smoke-dsh-package.mjs'), '--root', stage])
 
 await mkdir(out, { recursive: true })
-const filename = `Flowix-DSH_${version}_node24-windows-x64.tar.gz`
+const filename = `Flownote-DSH_${version}_node24-windows-x64.tar.gz`
 const archive = resolve(out, filename)
 run('tar.exe', ['-czf', archive, '-C', stage, '.'])
 run(nodePath, [resolve(repo, 'scripts/verify-dsh-archive.mjs'), '--archive', archive])
@@ -58,9 +58,9 @@ const bytes = await readFile(archive)
 const sha256 = createHash('sha256').update(bytes).digest('hex')
 const signature = signUpdaterArtifact(archive)
 const manifest = {
-  schemaVersion: 1, product: 'flowix-dsh', version, protocolVersion: 1, minFlowixVersion,
+  schemaVersion: 1, product: 'flownote-dsh', version, protocolVersion: 1, minFlownoteVersion,
   platforms: { 'windows-x86_64': {
-    url: `https://download.flowix-memo.com/dsh/${version}/${filename}?sha256=${sha256}`,
+    url: `https://download.flownote-memo.com/dsh/${version}/${filename}?sha256=${sha256}`,
     sha256, signature, sizeBytes: bytes.length, buildId: metadata.buildId,
   } },
 }

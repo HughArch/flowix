@@ -4,16 +4,16 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const frontendRoot = resolve(__dirname, "app/flowix-web");
+const frontendRoot = resolve(__dirname, "app/flownote-web");
 
 // KaTeX ships every font in three formats (woff2 / woff / ttf) so it can serve
-// ancient browsers, but Flowix only targets modern Chromium via Tauri. Strip
+// ancient browsers, but Flownote only targets modern Chromium via Tauri. Strip
 // the woff and ttf fallback entries from `katex.min.css` so the bundler emits
 // the woff2 variant only. Each font family goes from ~3 emitted assets down to
 // one (~250 KB total instead of ~1 MB).
 function modernFontWoff2Only(): Plugin {
   return {
-    name: "flowix-modern-font-woff2-only",
+    name: "flownote-modern-font-woff2-only",
     enforce: "pre",
     transform(code, id) {
       if (
@@ -47,7 +47,7 @@ function modernFontWoff2Only(): Plugin {
 // so the attribute is unnecessary and breaks the packaged entrypoint.
 function removePackagedCrossorigin(): Plugin {
   return {
-    name: "flowix-remove-packaged-crossorigin",
+    name: "flownote-remove-packaged-crossorigin",
     enforce: "post",
     transformIndexHtml(html) {
       return html.replace(/\s+crossorigin(?:="")?/g, "");
@@ -66,7 +66,7 @@ export default defineConfig(({ command }) => {
     // CSS, fonts, and lazy chunks resolve beside index.html in the installed
     // app. The dev server still needs an origin-root base for HMR.
     base: command === "build" ? "./" : "/",
-    // 鍓嶇鍏ュ彛: app/flowix-web/ 浣滀负 Vite 鏍? 璁?index.html / entrypoints /
+    // 鍓嶇鍏ュ彛: app/flownote-web/ 浣滀负 Vite 鏍? 璁?index.html / entrypoints /
     // public 閮藉湪鍚屼竴鐩綍, 閬垮厤 Tauri / Vite 璺緞浜掔浉绌胯秺銆?
     root: frontendRoot,
     publicDir: resolve(frontendRoot, "public"),
@@ -129,7 +129,7 @@ export default defineConfig(({ command }) => {
         "@features": resolve(frontendRoot, "features"),
         "@platform": resolve(frontendRoot, "platform"),
         "@shared": resolve(frontendRoot, "shared"),
-        "@flowix-target-entry": resolve(frontendRoot, "entrypoints/desktop.tsx"),
+        "@flownote-target-entry": resolve(frontendRoot, "entrypoints/desktop.tsx"),
       },
     },
 
@@ -139,8 +139,8 @@ export default defineConfig(({ command }) => {
     clearScreen: false,
     // 2. tauri expects a fixed port, fail if that port is not available
     server: {
-      // FLOWIX_VITE_PORT lets a second dev instance run beside the default one.
-      port: Number(process.env.FLOWIX_VITE_PORT) || 1420,
+      // FLOWNOTE_VITE_PORT lets a second dev instance run beside the default one.
+      port: Number(process.env.FLOWNOTE_VITE_PORT) || 1420,
       strictPort: true,
       host: host || false,
       hmr: host
@@ -152,7 +152,7 @@ export default defineConfig(({ command }) => {
         : undefined,
       watch: {
         // 3. tell Vite to ignore watching `backend` (relative to repo root)
-        ignored: ["**/app/flowix-desktop/**", "**/app/flowix-core/**", "**/app/flowix-cli/**", "**/app/target/**"],
+        ignored: ["**/app/flownote-desktop/**", "**/app/flownote-core/**", "**/app/flownote-cli/**", "**/app/target/**"],
       },
     },
   };

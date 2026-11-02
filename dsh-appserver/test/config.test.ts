@@ -5,7 +5,7 @@ function createSettings() {
   let revision = 4
   const values: Record<string, any> = {
     'llm-pi-ai': { providers: { local: { model: 'local' } }, apiKey: 'must-not-leak' },
-    'flowix-appserver': { skills: { enabled: {} }, runtime: { maxQueuedRequests: 10 } },
+    'flownote-appserver': { skills: { enabled: {} }, runtime: { maxQueuedRequests: 10 } },
   }
   return {
     describe: () => Object.entries(values).map(([ns, user]) => ({ ns, revision, user, applies: ['user'] })),
@@ -37,12 +37,12 @@ describe('configuration protocol', () => {
     expect(JSON.stringify(read.result)).not.toContain('must-not-leak')
 
     const write = await server.dispatch({ jsonrpc: '2.0', id: 3, method: 'config/batchWrite', params: {
-      namespace: 'flowix-appserver', expectedRevision: 4,
+      namespace: 'flownote-appserver', expectedRevision: 4,
       edits: [{ path: 'skills.enabled.frontend', operation: 'set', value: true }, { path: ['runtime', 'maxQueuedRequests'], operation: 'set', value: 20 }],
     } })
-    expect(write.result).toMatchObject({ namespace: 'flowix-appserver', revision: 5, effective: { skills: { enabled: { frontend: true } }, runtime: { maxQueuedRequests: 20 } } })
+    expect(write.result).toMatchObject({ namespace: 'flownote-appserver', revision: 5, effective: { skills: { enabled: { frontend: true } }, runtime: { maxQueuedRequests: 20 } } })
 
-    const stale = await server.dispatch({ jsonrpc: '2.0', id: 4, method: 'config/value/write', params: { namespace: 'flowix-appserver', path: 'runtime.maxQueuedRequests', value: 30, expectedRevision: 4 } })
+    const stale = await server.dispatch({ jsonrpc: '2.0', id: 4, method: 'config/value/write', params: { namespace: 'flownote-appserver', path: 'runtime.maxQueuedRequests', value: 30, expectedRevision: 4 } })
     expect(stale.error?.data).toMatchObject({ kind: 'revision_conflict', expected: 4, actual: 5 })
   })
 

@@ -3,29 +3,29 @@ key: cvr8knhf
 ---
 
 <p align="center">
-  <img src="./images/app-icon.png" width="120" alt="Flowix Memo" />
+  <img src="./images/app-icon.png" width="120" alt="Flownote Memo" />
 </p>
 
-<h1 align="center">Flowix Memo</h1>
+<h1 align="center">Flownote Memo</h1>
 
 <p align="center">
-  <a href="https://github.com/text2future/flowix/releases"><img src="https://img.shields.io/badge/Platform-macOS%20|%20Windows-0078D4" alt="Platform" /></a>
-  <a href="https://github.com/text2future/flowix/releases"><img src="https://img.shields.io/github/v/release/text2future/flowix" alt="Latest Release" /></a>
+  <a href="https://github.com/text2future/flownote/releases"><img src="https://img.shields.io/badge/Platform-macOS%20|%20Windows-0078D4" alt="Platform" /></a>
+  <a href="https://github.com/text2future/flownote/releases"><img src="https://img.shields.io/github/v/release/text2future/flownote" alt="Latest Release" /></a>
 </p>
 
-<img src="./images/readme-introduce.gif" width="100%" alt="Flowix Memo" />
+<img src="./images/readme-introduce.gif" width="100%" alt="Flownote Memo" />
 
-**Flowix Memo is a local documentation workspace built for AI agents.**
+**Flownote Memo is a local documentation workspace built for AI agents.**
 
 It brings everyday notes, task requirements, reference material, agent conversations, and outputs into a single Markdown workflow, so context can accumulate over time, remain editable, and be reused whenever you need it.
 
-Flowix Memo is designed to solve a few common problems:
+Flownote Memo is designed to solve a few common problems:
 
 - Prompts and task briefs are scattered across different places and hard to manage
 - Agents lose important context and repeat the same mistakes
 - Workflows and valuable outputs developed through conversations are difficult to capture and reuse
 
-In Flowix Memo, a document can be a note, an agent task brief, durable memory, and a work product. AI collaboration no longer ends with a one-off chat—it becomes knowledge you can review, edit, and use again.
+In Flownote Memo, a document can be a note, an agent task brief, durable memory, and a work product. AI collaboration no longer ends with a one-off chat—it becomes knowledge you can review, edit, and use again.
 
 ## What You Can Do
 
@@ -49,7 +49,7 @@ Your content is not locked into a proprietary cloud service. Even if you change 
 
 ### Use different agents inside documents
 
-Flowix Memo includes a built-in AI agent and can also connect to local CLI agents such as Claude Code, Codex, and Hermes. For each task, you control what an agent can access: the current note, a folder, the full notebook, or a project directory.
+Flownote Memo includes a built-in AI agent and can also connect to local CLI agents such as Claude Code, Codex, and Hermes. For each task, you control what an agent can access: the current note, a folder, the full notebook, or a project directory.
 
 Clearer context leads to more reliable output. Because the process is recorded, it is also easier to review, revise, and continue the work.
 
@@ -57,9 +57,9 @@ The built-in agent uses a BYOK (Bring Your Own Key) model. Selected context is s
 
 ### Connect external agent workflows
 
-Flowix CLI lets local agents perform non-interactive note operations. MCP enables external agent clients with MCP support to read, search, and update Flowix documents.
+Flownote CLI lets local agents perform non-interactive note operations. MCP enables external agent clients with MCP support to read, search, and update Flownote documents.
 
-MCP is the recommended option for external agent clients. See the [documentation](https://flowix-memo.com/docs/) for setup instructions and tool details.
+MCP is the recommended option for external agent clients. See the [documentation](https://flownote-memo.com/docs/) for setup instructions and tool details.
 
 ## Core Capabilities
 
@@ -74,7 +74,7 @@ MCP is the recommended option for external agent clients. See the [documentation
 
 ## Quick Start
 
-1. Download and install Flowix Memo from [Releases](https://github.com/text2future/flowix/releases).
+1. Download and install Flownote Memo from [Releases](https://github.com/text2future/flownote/releases).
 2. Create a local folder, or register an existing folder as a notebook.
 3. Create a document and write down the task background, reference material, goal, and constraints.
 4. Use an agent inside the document, or continue organizing your content with tags and properties.
@@ -82,8 +82,8 @@ MCP is the recommended option for external agent clients. See the [documentation
 ## Local Development
 
 ```bash
-git clone https://github.com/text2future/flowix.git
-cd flowix
+git clone https://github.com/text2future/flownote.git
+cd flownote
 npm install
 
 npm run tauri dev
@@ -98,6 +98,6 @@ Development requires Node.js 20+, Rust 1.75+, and Tauri v2. The desktop app supp
 Issues and pull requests are welcome.
 
 - Notebook storage and index lifecycle: [NOTEBOOK-STORAGE.md](./NOTEBOOK-STORAGE.md)
-- Website: [https://flowix-memo.com/](https://flowix-memo.com/)
-- Documentation: [https://flowix-memo.com/docs/](https://flowix-memo.com/docs/)
-- GitHub: [https://github.com/text2future/flowix](https://github.com/text2future/flowix)
+- Website: [https://flownote-memo.com/](https://flownote-memo.com/)
+- Documentation: [https://flownote-memo.com/docs/](https://flownote-memo.com/docs/)
+- GitHub: [https://github.com/text2future/flownote](https://github.com/text2future/flownote)

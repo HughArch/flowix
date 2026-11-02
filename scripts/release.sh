@@ -1,37 +1,37 @@
 #!/usr/bin/env bash
 # Build signed Tauri updater artifacts, publish them to R2, and deploy the
-# stable updater manifest through the flowix-home Pages site.
+# stable updater manifest through the flownote-home Pages site.
 #
 # Useful overrides:
-#   FLOWIX_HOME_DIR          local flowix-home checkout
-#   FLOWIX_TARGETS           space-separated Rust targets to collect
-#   FLOWIX_R2_BUCKET         R2 bucket name (default: flowix-downloads)
-#   FLOWIX_R2_PREFIX         object prefix for versioned artifacts (default: v${VERSION})
-#   FLOWIX_R2_UPDATER_PREFIX object prefix for stable per-platform updater manifests
+#   FLOWNOTE_HOME_DIR          local flownote-home checkout
+#   FLOWNOTE_TARGETS           space-separated Rust targets to collect
+#   FLOWNOTE_R2_BUCKET         R2 bucket name (default: flownote-downloads)
+#   FLOWNOTE_R2_PREFIX         object prefix for versioned artifacts (default: v${VERSION})
+#   FLOWNOTE_R2_UPDATER_PREFIX object prefix for stable per-platform updater manifests
 #                            (default: updater) ── written to
 #                            ${BUCKET}/${PREFIX}/{macos,windows,linux}/latest.json
-#   FLOWIX_R2_PUBLIC_BASE    public package origin
+#   FLOWNOTE_R2_PUBLIC_BASE    public package origin
 #   TAURI_SIGNING_PRIVATE_KEY           Tauri updater private key (or use PATH)
 #   TAURI_SIGNING_PRIVATE_KEY_PATH      path to the Tauri updater private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  optional Tauri updater key password
-#   FLOWIX_SKIP_BUILD=1       collect artifacts already present in CARGO_TARGET_DIR
-#   FLOWIX_PUBLISH=1          upload R2; full releases also deploy flowix-home
-#   FLOWIX_UPDATE_NOTIFY     whether installed clients show update prompts
+#   FLOWNOTE_SKIP_BUILD=1       collect artifacts already present in CARGO_TARGET_DIR
+#   FLOWNOTE_PUBLISH=1          upload R2; full releases also deploy flownote-home
+#   FLOWNOTE_UPDATE_NOTIFY     whether installed clients show update prompts
 #                            (default: true; set false for silent releases)
 #
-# This is the only production publication path for the Flowix updater. The
+# This is the only production publication path for the Flownote updater. The
 # GitHub release workflow creates draft artifacts but does not update the
 # configured updater endpoint. The default mode here is build + manifest
 # generation only; publishing is explicit so a local build cannot accidentally
 # replace the production manifest.
 #
-# Release scope (auto-detected from FLOWIX_TARGETS):
+# Release scope (auto-detected from FLOWNOTE_TARGETS):
 #   * full   = all three platform groups (macos, windows, linux) are covered
-#              → per-platform updater manifests uploaded and flowix-home
+#              → per-platform updater manifests uploaded and flownote-home
 #                rebuilt/deployed for the website downloads.
 #   * partial = one or two platform groups only
 #              → only the covered per-platform updater manifests are
-#                uploaded; flowix-home is left alone (lagging platforms keep
+#                uploaded; flownote-home is left alone (lagging platforms keep
 #                whatever the site already shows, which is correct because
 #                they were not released this time).
 
@@ -42,26 +42,26 @@ CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/.build/cargo-target}"
 export CARGO_TARGET_DIR
 
 VERSION="$(awk -F'"' '/^version *=/{print $2; exit}' "$REPO_ROOT/app/Cargo.toml")"
-FLOWIX_HOME_DIR="${FLOWIX_HOME_DIR:-$REPO_ROOT/../flowix-home}"
-FLOWIX_R2_BUCKET="${FLOWIX_R2_BUCKET:-flowix-downloads}"
-FLOWIX_R2_PREFIX="${FLOWIX_R2_PREFIX:-v${VERSION}}"
-FLOWIX_R2_UPDATER_PREFIX="${FLOWIX_R2_UPDATER_PREFIX:-updater}"
-FLOWIX_R2_PUBLIC_BASE="${FLOWIX_R2_PUBLIC_BASE:-https://download.flowix.cc}"
-FLOWIX_HOME_PROJECT="${FLOWIX_HOME_PROJECT:-flowix-home}"
-FLOWIX_HOME_BRANCH="${FLOWIX_HOME_BRANCH:-main}"
+FLOWNOTE_HOME_DIR="${FLOWNOTE_HOME_DIR:-$REPO_ROOT/../flownote-home}"
+FLOWNOTE_R2_BUCKET="${FLOWNOTE_R2_BUCKET:-flownote-downloads}"
+FLOWNOTE_R2_PREFIX="${FLOWNOTE_R2_PREFIX:-v${VERSION}}"
+FLOWNOTE_R2_UPDATER_PREFIX="${FLOWNOTE_R2_UPDATER_PREFIX:-updater}"
+FLOWNOTE_R2_PUBLIC_BASE="${FLOWNOTE_R2_PUBLIC_BASE:-https://download.flownote.cc}"
+FLOWNOTE_HOME_PROJECT="${FLOWNOTE_HOME_PROJECT:-flownote-home}"
+FLOWNOTE_HOME_BRANCH="${FLOWNOTE_HOME_BRANCH:-main}"
 RELEASE_OUT="${RELEASE_OUT:-$CARGO_TARGET_DIR/release/updater}"
 
 SIGNING_KEY_AVAILABLE=0
 if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
   SIGNING_KEY_AVAILABLE=1
 elif [[ "$(uname -s)" == "Darwin" ]]; then
-  TAURI_SIGNING_PRIVATE_KEY_KEYCHAIN_SERVICE="${TAURI_SIGNING_PRIVATE_KEY_KEYCHAIN_SERVICE:-com.flowix.minisign.private-key}"
+  TAURI_SIGNING_PRIVATE_KEY_KEYCHAIN_SERVICE="${TAURI_SIGNING_PRIVATE_KEY_KEYCHAIN_SERVICE:-com.flownote.minisign.private-key}"
   if security find-generic-password -s "$TAURI_SIGNING_PRIVATE_KEY_KEYCHAIN_SERVICE" -w >/dev/null 2>&1; then
     SIGNING_KEY_AVAILABLE=1
   fi
 fi
-if [[ "${FLOWIX_SKIP_BUILD:-0}" != "1" && "$SIGNING_KEY_AVAILABLE" != "1" ]]; then
-  echo "release.sh: TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH is required for signed Flowix updater artifacts" >&2
+if [[ "${FLOWNOTE_SKIP_BUILD:-0}" != "1" && "$SIGNING_KEY_AVAILABLE" != "1" ]]; then
+  echo "release.sh: TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH is required for signed Flownote updater artifacts" >&2
   exit 1
 fi
 if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" \
@@ -71,16 +71,16 @@ if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" \
   exit 1
 fi
 
-if [[ -z "${FLOWIX_TARGETS:-}" ]]; then
+if [[ -z "${FLOWNOTE_TARGETS:-}" ]]; then
   case "$(uname -s)" in
-    Darwin) FLOWIX_TARGETS="aarch64-apple-darwin" ;;
-    MINGW*|MSYS*|CYGWIN*) FLOWIX_TARGETS="x86_64-pc-windows-msvc" ;;
-    *) FLOWIX_TARGETS="x86_64-unknown-linux-gnu" ;;
+    Darwin) FLOWNOTE_TARGETS="aarch64-apple-darwin" ;;
+    MINGW*|MSYS*|CYGWIN*) FLOWNOTE_TARGETS="x86_64-pc-windows-msvc" ;;
+    *) FLOWNOTE_TARGETS="x86_64-unknown-linux-gnu" ;;
   esac
 fi
-if [[ "${FLOWIX_PUBLISH:-0}" == "1" ]]; then
-  if [[ "${FLOWIX_SKIP_BUILD:-0}" != "1" ]]; then
-    echo "release.sh: production publishing requires FLOWIX_SKIP_BUILD=1" >&2
+if [[ "${FLOWNOTE_PUBLISH:-0}" == "1" ]]; then
+  if [[ "${FLOWNOTE_SKIP_BUILD:-0}" != "1" ]]; then
+    echo "release.sh: production publishing requires FLOWNOTE_SKIP_BUILD=1" >&2
     exit 1
   fi
   # Per-platform updater manifests make partial releases safe: mac and win
@@ -91,8 +91,8 @@ fi
 rm -rf "$RELEASE_OUT"
 mkdir -p "$RELEASE_OUT"
 
-if [[ "${FLOWIX_SKIP_BUILD:-0}" != "1" ]]; then
-  echo "==> building Flowix ${VERSION}"
+if [[ "${FLOWNOTE_SKIP_BUILD:-0}" != "1" ]]; then
+  echo "==> building Flownote ${VERSION}"
   cd "$REPO_ROOT"
   npm run tauri:build:prod
 fi
@@ -102,9 +102,9 @@ find_artifact() {
   local search_root
   local artifact_pattern
   case "$target" in
-    *apple-darwin) artifact_pattern='Flowix.app.tar.gz' ;;
-    *windows-msvc) artifact_pattern="Flowix_${VERSION}_*-setup.exe" ;;
-    *linux-gnu) artifact_pattern="Flowix_${VERSION}_*.AppImage.tar.gz" ;;
+    *apple-darwin) artifact_pattern='Flownote.app.tar.gz' ;;
+    *windows-msvc) artifact_pattern="Flownote_${VERSION}_*-setup.exe" ;;
+    *linux-gnu) artifact_pattern="Flownote_${VERSION}_*.AppImage.tar.gz" ;;
     *) return 1 ;;
   esac
   for search_root in \
@@ -157,11 +157,11 @@ write_manifest() {
   shift
   local rows=("$@")
 
-  FLOWIX_MANIFEST_OUT="$output" \
-  FLOWIX_RELEASE_OUT="$RELEASE_OUT" \
-  FLOWIX_VERSION="$VERSION" \
-  FLOWIX_R2_PUBLIC_BASE="$FLOWIX_R2_PUBLIC_BASE" \
-  FLOWIX_R2_PREFIX="$FLOWIX_R2_PREFIX" \
+  FLOWNOTE_MANIFEST_OUT="$output" \
+  FLOWNOTE_RELEASE_OUT="$RELEASE_OUT" \
+  FLOWNOTE_VERSION="$VERSION" \
+  FLOWNOTE_R2_PUBLIC_BASE="$FLOWNOTE_R2_PUBLIC_BASE" \
+  FLOWNOTE_R2_PREFIX="$FLOWNOTE_R2_PREFIX" \
   node "$REPO_ROOT/scripts/build-updater-manifest.mjs" "${rows[@]}"
 }
 
@@ -172,7 +172,7 @@ verify_manifest() {
   local required_platforms=("$@")
   node "$REPO_ROOT/scripts/verify-updater-release.mjs" \
     --release-dir "$RELEASE_OUT" \
-    "$manifest" "$VERSION" "$FLOWIX_R2_PREFIX" "${required_platforms[@]}"
+    "$manifest" "$VERSION" "$FLOWNOTE_R2_PREFIX" "${required_platforms[@]}"
 }
 
 append_group_row() {
@@ -223,7 +223,7 @@ GROUP_ROWS_LINUX=""
 GROUP_PLATFORMS_MACOS=""
 GROUP_PLATFORMS_WINDOWS=""
 GROUP_PLATFORMS_LINUX=""
-for target in $FLOWIX_TARGETS; do
+for target in $FLOWNOTE_TARGETS; do
   platform="$(platform_for_target "$target")"
   group="$(platform_group_for_target "$target")"
   suffix="$(artifact_suffix_for_target "$target")"
@@ -239,17 +239,17 @@ for target in $FLOWIX_TARGETS; do
   fi
   signature_path="${source_path}.sig"
   if [[ ! -f "$signature_path" ]]; then
-    echo "release.sh: missing Flowix updater signature $signature_path" >&2
+    echo "release.sh: missing Flownote updater signature $signature_path" >&2
     exit 1
   fi
-  output_name="Flowix_${VERSION}_${platform}.${suffix}"
+  output_name="Flownote_${VERSION}_${platform}.${suffix}"
   cp "$source_path" "$RELEASE_OUT/$output_name"
   cp "$signature_path" "$RELEASE_OUT/$output_name.sig"
-  node "$REPO_ROOT/scripts/verify-flowix-package.mjs" "$RELEASE_OUT/$output_name"
+  node "$REPO_ROOT/scripts/verify-flownote-package.mjs" "$RELEASE_OUT/$output_name"
   UPLOAD_FILES+=("$output_name" "$output_name.sig")
   echo "==> collected signed updater $platform: $output_name"
 
-  # Keep the human-facing macOS DMG available for flowix-home. The updater
+  # Keep the human-facing macOS DMG available for flownote-home. The updater
   # itself uses the signed .app.tar.gz archive above.
   if [[ "$group" == "macos" ]]; then
     installer_path=""
@@ -257,14 +257,14 @@ for target in $FLOWIX_TARGETS; do
       "$CARGO_TARGET_DIR/$target/release/bundle" \
       "$CARGO_TARGET_DIR/release/bundle"; do
       [[ -d "$search_root" ]] || continue
-      installer_path="$(find "$search_root" -type f -name "Flowix_${VERSION}_*.dmg" -print | sort | tail -n 1)"
+      installer_path="$(find "$search_root" -type f -name "Flownote_${VERSION}_*.dmg" -print | sort | tail -n 1)"
       [[ -n "$installer_path" ]] && break
     done
     if [[ -z "$installer_path" || ! -f "$installer_path" ]]; then
       echo "release.sh: no macOS DMG found for $target" >&2
       exit 1
     fi
-    installer_name="Flowix_${VERSION}_${platform}.dmg"
+    installer_name="Flownote_${VERSION}_${platform}.dmg"
     cp "$installer_path" "$RELEASE_OUT/$installer_name"
     UPLOAD_FILES+=("$installer_name")
     echo "==> collected website installer $platform: $installer_name"
@@ -273,10 +273,10 @@ for target in $FLOWIX_TARGETS; do
   append_group_row "$group" "$platform|$output_name" "$platform"
 done
 
-export FLOWIX_RELEASE_OUT="$RELEASE_OUT"
-export FLOWIX_VERSION="$VERSION"
-export FLOWIX_R2_PUBLIC_BASE
-export FLOWIX_R2_PREFIX
+export FLOWNOTE_RELEASE_OUT="$RELEASE_OUT"
+export FLOWNOTE_VERSION="$VERSION"
+export FLOWNOTE_R2_PUBLIC_BASE
+export FLOWNOTE_R2_PREFIX
 
 # 收集有产出的 group (顺序固定为 macos -> windows -> linux, 方便日志比对)
 declare -a ACTIVE_GROUPS=()
@@ -312,19 +312,19 @@ for group in "${ACTIVE_GROUPS[@]}"; do
   verify_manifest "$group_out" "${group_required[@]}"
 done
 
-if [[ "${FLOWIX_PUBLISH:-0}" != "1" ]]; then
-  echo "==> publish skipped (set FLOWIX_PUBLISH=1 to upload R2)"
+if [[ "${FLOWNOTE_PUBLISH:-0}" != "1" ]]; then
+  echo "==> publish skipped (set FLOWNOTE_PUBLISH=1 to upload R2)"
   exit 0
 fi
 
 WRANGLER="${WRANGLER:-$(command -v wrangler || true)}"
 if [[ -z "$WRANGLER" ]]; then
-  echo "release.sh: wrangler is required when FLOWIX_PUBLISH=1" >&2
+  echo "release.sh: wrangler is required when FLOWNOTE_PUBLISH=1" >&2
   exit 1
 fi
 
-if [[ "$IS_FULL_RELEASE" -eq 1 && ! -d "$FLOWIX_HOME_DIR" ]]; then
-  echo "release.sh: flowix-home checkout not found at $FLOWIX_HOME_DIR" >&2
+if [[ "$IS_FULL_RELEASE" -eq 1 && ! -d "$FLOWNOTE_HOME_DIR" ]]; then
+  echo "release.sh: flownote-home checkout not found at $FLOWNOTE_HOME_DIR" >&2
   exit 1
 fi
 
@@ -332,7 +332,7 @@ fi
 # archive 和官网下载用的 DMG；Windows NSIS 包两者共用同一文件。
 for name in "${UPLOAD_FILES[@]}"; do
   echo "==> uploading $name to R2"
-  "$WRANGLER" r2 object put "$FLOWIX_R2_BUCKET/$FLOWIX_R2_PREFIX/$name" \
+  "$WRANGLER" r2 object put "$FLOWNOTE_R2_BUCKET/$FLOWNOTE_R2_PREFIX/$name" \
     --file "$RELEASE_OUT/$name" --remote
 done
 
@@ -341,25 +341,25 @@ done
 # Keep that address working for installed clients alongside the canonical path.
 for group in "${ACTIVE_GROUPS[@]}"; do
   group_manifest="$RELEASE_OUT/updater/$group/latest.json"
-  for manifest_key in "$FLOWIX_R2_UPDATER_PREFIX/$group/latest.json" "$FLOWIX_R2_UPDATER_PREFIX/pi/$group/latest.json"; do
+  for manifest_key in "$FLOWNOTE_R2_UPDATER_PREFIX/$group/latest.json" "$FLOWNOTE_R2_UPDATER_PREFIX/pi/$group/latest.json"; do
     echo "==> uploading $group updater manifest to R2: $manifest_key"
-    "$WRANGLER" r2 object put "$FLOWIX_R2_BUCKET/$manifest_key" \
+    "$WRANGLER" r2 object put "$FLOWNOTE_R2_BUCKET/$manifest_key" \
       --file "$group_manifest" --content-type application/json --remote
   done
 done
 
 if [[ "$IS_FULL_RELEASE" -eq 1 ]]; then
-  # flowix-home 使用模板中的静态下载链接, 全量发布时重新构建并部署站点。
-  npm --prefix "$FLOWIX_HOME_DIR" run build
-  echo "==> deploying flowix-home"
-  "$WRANGLER" pages deploy "$FLOWIX_HOME_DIR/_site" \
-    --project-name "$FLOWIX_HOME_PROJECT" --branch "$FLOWIX_HOME_BRANCH"
+  # flownote-home 使用模板中的静态下载链接, 全量发布时重新构建并部署站点。
+  npm --prefix "$FLOWNOTE_HOME_DIR" run build
+  echo "==> deploying flownote-home"
+  "$WRANGLER" pages deploy "$FLOWNOTE_HOME_DIR/_site" \
+    --project-name "$FLOWNOTE_HOME_PROJECT" --branch "$FLOWNOTE_HOME_BRANCH"
 else
-  echo "==> flowix-home deployment skipped for partial release"
+  echo "==> flownote-home deployment skipped for partial release"
 fi
 
-echo "==> published Flowix ${VERSION}"
+echo "==> published Flownote ${VERSION}"
 for group in "${ACTIVE_GROUPS[@]}"; do
-  echo "    updater[$group]: $FLOWIX_R2_PUBLIC_BASE/$FLOWIX_R2_UPDATER_PREFIX/$group/latest.json"
+  echo "    updater[$group]: $FLOWNOTE_R2_PUBLIC_BASE/$FLOWNOTE_R2_UPDATER_PREFIX/$group/latest.json"
 done
-echo "    artifacts: $FLOWIX_R2_PUBLIC_BASE/$FLOWIX_R2_PREFIX/"
+echo "    artifacts: $FLOWNOTE_R2_PUBLIC_BASE/$FLOWNOTE_R2_PREFIX/"

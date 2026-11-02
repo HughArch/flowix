@@ -63,8 +63,8 @@ describe('skills/list protocol', () => {
     expect(disabled.result).toEqual({ effectiveEnabled: false, revision: 9 })
     expect(roots.result).toEqual({ extraRoots: ['D:/skills'], revision: 9 })
     expect(calls).toEqual([
-      { namespace: 'flowix-appserver', path: ['skills', 'enabled', 'reviewer'], value: false, expectedRevision: 8 },
-      { namespace: 'flowix-appserver', path: ['skills', 'extraRoots'], value: ['D:/skills'], expectedRevision: 9 },
+      { namespace: 'flownote-appserver', path: ['skills', 'enabled', 'reviewer'], value: false, expectedRevision: 8 },
+      { namespace: 'flownote-appserver', path: ['skills', 'extraRoots'], value: ['D:/skills'], expectedRevision: 9 },
     ])
   })
 })

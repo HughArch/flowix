@@ -10,12 +10,12 @@
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["app/flowix-web/*"],
-      "@app/*": ["app/flowix-web/app/*"],
-      "@features/*": ["app/flowix-web/features/*"],
-      "@platform/*": ["app/flowix-web/platform/*"],
-      "@shared/*": ["app/flowix-web/shared/*"],
-      "@flowix-target-entry": ["app/flowix-web/entrypoints/desktop.tsx"]
+      "@/*": ["app/flownote-web/*"],
+      "@app/*": ["app/flownote-web/app/*"],
+      "@features/*": ["app/flownote-web/features/*"],
+      "@platform/*": ["app/flownote-web/platform/*"],
+      "@shared/*": ["app/flownote-web/shared/*"],
+      "@flownote-target-entry": ["app/flownote-web/entrypoints/desktop.tsx"]
     },
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
@@ -29,6 +29,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["app/flowix-web"],
+  "include": ["app/flownote-web"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

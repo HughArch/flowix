@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./app/flowix-web/**/*.{html,js,ts,jsx,tsx}"],
+  content: ["./app/flownote-web/**/*.{html,js,ts,jsx,tsx}"],
   theme: {
     extend: {
       colors: {

@@ -28,13 +28,13 @@
 - 块拖拽 `extensions/block-drag.ts`：
   - 支持单块与多块（`BlockDragState.ranges`）。
   - 落点是**一维**的：`findInsertPos` 按 `clientY` 找插入位，`side: 'before' | 'after'`，
-    drop indicator 是水平线（`flowix-block-drop-indicator`）。
+    drop indicator 是水平线（`flownote-block-drop-indicator`）。
   - 列表有独立的嵌套/拆分/合并逻辑（list-structure、findSplitListTarget 等）。
 - 多块选择 `extensions/block-selection.ts`：拖拽手柄上的 Mod-click / Shift-click 维护
   `ranges`，位置随 transaction 映射。
 - 右键菜单 `components/drag-context-menu/`：`items.tsx` 是 data-driven 菜单项，
   `actions.ts` 负责分发；新增菜单项需要扩展 `BlockMenuItem` union。
-- 自定义节点的 Markdown 先例：`MathBlock` / `WebCard` / `FlowixTable` 都实现了
+- 自定义节点的 Markdown 先例：`MathBlock` / `WebCard` / `FlownoteTable` 都实现了
   `parseMarkdown` / `renderMarkdown` / `markdownTokenizer`，columns 沿用同一套机制。
 - 当前没有任何 columns 节点，也没有横向落点逻辑。
 
@@ -69,13 +69,13 @@ column: Node
 布局 CSS（`styles/editor.css`）：
 
 ```css
-.flowix-columns {
+.flownote-columns {
   display: flex;
   align-items: flex-start;   /* 各列自然高度，不拉伸 */
   gap: 24px;
   min-width: 0;
 }
-.flowix-column {
+.flownote-column {
   min-width: 0;              /* 关键：允许收缩 */
   flex-basis: 0;
   overflow-wrap: anywhere;   /* 长 URL / 长单词自动换行 */
@@ -137,12 +137,12 @@ column: Node
 - `parseMarkdown` 用 `helpers.parseChildren` 解析列内 tokens；列宽从 token attrs 读取。
 - `renderMarkdown` 输出上述格式；列内内容用 `h.renderChildren`，闭合冒号数量按当前深度生成。
 - 新扩展同时注册进 `createMarkdownEditorExtensions` 与 `createMarkdownParserExtensions`。
-  只注册编辑器会导致 worker 解析丢结构（参见 `FlowixTable` 在 parser registry 的注释）。
+  只注册编辑器会导致 worker 解析丢结构（参见 `FlownoteTable` 在 parser registry 的注释）。
 - `serializeEditorMarkdown` 无需特殊处理，走节点的 `renderMarkdown`。
 
 ## 3. 渲染
 
-- `columns` 用 NodeView 渲染 `div.flowix-columns`，`column` 渲染 `div.flowix-column`，
+- `columns` 用 NodeView 渲染 `div.flownote-columns`，`column` 渲染 `div.flownote-column`，
   内容用 `contentDOM`，不手写子内容。
 - 列内 block 使用现有 renderer；列上下文通过 NodeView 的 DOM 类传递即可，不改文档属性的
   解析逻辑。
@@ -188,7 +188,7 @@ type BlockDropTarget =
 ### 4.2 指示器
 
 现有 indicator 是水平线。`new-column` 时给目标 block/列加
-`flowix-column-drop-left/right`（朝内 4px 的 `box-shadow` 竖线 + 目标块高亮），
+`flownote-column-drop-left/right`（朝内 4px 的 `box-shadow` 竖线 + 目标块高亮），
 不再渲染水平插入线。
 
 ### 4.3 跨列移动
@@ -243,13 +243,13 @@ type BlockDropTarget =
 
 ### CLI / MCP
 
-CLI 通过 `flowix columns` 暴露同一套解析器：
+CLI 通过 `flownote columns` 暴露同一套解析器：
 
 ```bash
-flowix columns list <note> --json
-flowix columns add <note> --columns 3 [--at <line>] --json
-flowix columns remove <note> --block 1 --column 2 --json
-flowix columns width <note> --block 1 --widths 50,150 --json
+flownote columns list <note> --json
+flownote columns add <note> --columns 3 [--at <line>] --json
+flownote columns remove <note> --block 1 --column 2 --json
+flownote columns width <note> --block 1 --widths 50,150 --json
 ```
 
 块/列索引均为 1-based；`--at` 是插入分栏前的行号，缺省追加到文末；删除一列后若只剩 1 列，自动解散分栏并提升内容。
@@ -261,13 +261,13 @@ MCP 的 `memo` 工具新增结构化 action：`columns.list`、`columns.add`、`
 行背景写在块末尾的 HTML 注释里（编辑器负责渲染）：
 
 ```markdown
-这一行有淡黄色背景<!-- flowix:block-bg {"bg":"yellow"} -->
+这一行有淡黄色背景<!-- flownote:block-bg {"bg":"yellow"} -->
 ```
 
 ```bash
-flowix background list <note> --json
-flowix background set <note> --line 3 --color yellow --json
-flowix background clear <note> --line 3 --json
+flownote background list <note> --json
+flownote background set <note> --line 3 --color yellow --json
+flownote background clear <note> --line 3 --json
 ```
 
 `--line` 是 1-based 的 Markdown 行号，落在哪个文本块上就作用于整块（多行段落、标题、列表项、列内段落）；空行、围栏、表格行与 `:::` 结构行不可上色。可用颜色：`red orange yellow green cyan blue purple pink gray`。

@@ -5,16 +5,16 @@ import { basename, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const repo = resolve(import.meta.dirname, '..')
-const releaseDir = resolve(process.env.FLOWIX_DSH_RELEASE_DIR ?? resolve(repo, '.build/releases/dsh'))
-const manifestPath = resolve(process.env.FLOWIX_DSH_MANIFEST ?? resolve(releaseDir, 'platforms/macos/latest.json'))
-const bucket = process.env.FLOWIX_DSH_R2_BUCKET ?? 'flowix-downloads'
-const objectPrefix = process.env.FLOWIX_DSH_R2_PREFIX ?? 'dsh'
-const channel = process.env.FLOWIX_DSH_CHANNEL ?? 'macos'
-const publicBase = (process.env.FLOWIX_DSH_PUBLIC_BASE ?? 'https://download.flowix-memo.com').replace(/\/$/u, '')
+const releaseDir = resolve(process.env.FLOWNOTE_DSH_RELEASE_DIR ?? resolve(repo, '.build/releases/dsh'))
+const manifestPath = resolve(process.env.FLOWNOTE_DSH_MANIFEST ?? resolve(releaseDir, 'platforms/macos/latest.json'))
+const bucket = process.env.FLOWNOTE_DSH_R2_BUCKET ?? 'flownote-downloads'
+const objectPrefix = process.env.FLOWNOTE_DSH_R2_PREFIX ?? 'dsh'
+const channel = process.env.FLOWNOTE_DSH_CHANNEL ?? 'macos'
+const publicBase = (process.env.FLOWNOTE_DSH_PUBLIC_BASE ?? 'https://download.flownote-memo.com').replace(/\/$/u, '')
 const wrangler = process.env.WRANGLER ?? 'wrangler'
 
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
-if (manifest.product !== 'flowix-dsh' || !manifest.version || !manifest.platforms) {
+if (manifest.product !== 'flownote-dsh' || !manifest.version || !manifest.platforms) {
   throw new Error(`invalid DSH release manifest: ${manifestPath}`)
 }
 const version = manifest.version
@@ -37,7 +37,7 @@ for (const [platform, artifact] of Object.entries(manifest.platforms)) {
 }
 
 // The versioned prefix is immutable. Publish every artifact and its sidecar
-// before touching the stable manifest consumed by installed Flowix clients.
+// before touching the stable manifest consumed by installed Flownote clients.
 for (const item of artifacts) {
   put(`${objectPrefix}/${version}/${item.filename}`, item.archive)
   put(`${objectPrefix}/${version}/${item.filename}.sig`, item.signature)

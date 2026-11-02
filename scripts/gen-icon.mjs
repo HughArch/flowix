@@ -1,6 +1,6 @@
-// Regenerates the app icon set from app/flowix-web/assets/app-icon-source.png.
+// Regenerates the app icon set from app/flownote-web/assets/app-icon-source.png.
 //
-// This script must never rewrite app/flowix-web/assets/product-logo.svg.
+// This script must never rewrite app/flownote-web/assets/product-logo.svg.
 // product-logo.svg is a separately maintained brand asset; app-icon-source.png
 // is the packaged App icon source. The in-app product mark (productlogo.png)
 // IS derived from app-icon-source.png, so the memo header chip and the OS icon
@@ -38,14 +38,14 @@ import { deflateSync, inflateSync } from 'node:zlib';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const backendDir = resolve(root, 'app/flowix-desktop');
-const productLogoSvg = resolve(root, 'app/flowix-web/assets/product-logo.svg');
-const sourcePng = resolve(root, 'app/flowix-web/assets/app-icon-source.png');
-const androidForegroundSvg = resolve(root, 'app/flowix-web/assets/app-icon-android-foreground.svg');
+const backendDir = resolve(root, 'app/flownote-desktop');
+const productLogoSvg = resolve(root, 'app/flownote-web/assets/product-logo.svg');
+const sourcePng = resolve(root, 'app/flownote-web/assets/app-icon-source.png');
+const androidForegroundSvg = resolve(root, 'app/flownote-web/assets/app-icon-android-foreground.svg');
 const androidResDir = resolve(backendDir, 'gen/android/app/src/main/res');
 // In-app product mark (memo list header). Same artwork as the app icon so the
 // two can never drift; rendered at 256px for 3x displays of an 18px chip.
-const inAppMarkPng = resolve(root, 'app/flowix-web/assets/productlogo.png');
+const inAppMarkPng = resolve(root, 'app/flownote-web/assets/productlogo.png');
 const IN_APP_MARK_SIZE = 256;
 const iconsDir = resolve(backendDir, 'icons');
 const tmpDir = resolve(root, '.tmp-icon-build');
@@ -132,12 +132,12 @@ syncInAppMark();
 for (const sub of ['android', 'ios']) {
 	rmSync(resolve(iconsDir, sub), { recursive: true, force: true });
 }
-console.log('cleaned app/flowix-desktop/icons/{android,ios}');
+console.log('cleaned app/flownote-desktop/icons/{android,ios}');
 
 rmSync(tmpDir, { recursive: true, force: true });
 const productLogoHashAfter = fileHash(productLogoSvg);
 if (productLogoHashBefore !== productLogoHashAfter) {
-	throw new Error('gen-icon.mjs must not modify app/flowix-web/assets/product-logo.svg');
+	throw new Error('gen-icon.mjs must not modify app/flownote-web/assets/product-logo.svg');
 }
 
 function fileHash(file) {

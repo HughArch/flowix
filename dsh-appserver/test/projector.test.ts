@@ -325,7 +325,7 @@ describe('durable event projector', () => {
     })
   })
 
-  it('preserves the Flowix timeline and appends the compact checkpoint', () => {
+  it('preserves the Flownote timeline and appends the compact checkpoint', () => {
     const messages = projectHistoryMessages('thread-a', [
       { type: 'user/message', seq: 1, data: { id: 'u1', content: [{ type: 'text', text: 'old question' }] }, surfaceOp: 'append' },
       { type: 'assistant/message', seq: 2, data: { message: { id: 'a1', content: [{ type: 'text', text: 'old answer' }] } }, surfaceOp: 'append' },

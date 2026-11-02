@@ -7,7 +7,7 @@ const newSessionId = () => `session-${randomUUID().replaceAll('-', '')}`
 export function threadMethods(adapter, notify) {
   return {
     'thread/start': async p => {
-      // Flowix's card/local id is correlation data, not a provider id.
+      // Flownote's card/local id is correlation data, not a provider id.
       // Mint a durable DSH session id instead of accepting it as threadId.
       const thread = await adapter.startThread(newSessionId(), launchConfig(p))
       notify('thread/started', { thread })

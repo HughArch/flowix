@@ -4,18 +4,18 @@ import { resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 
 const repo = resolve(import.meta.dirname, '..')
-const configuredSource = process.env.FLOWIX_DSH_UPSTREAM_ROOT?.trim()
+const configuredSource = process.env.FLOWNOTE_DSH_UPSTREAM_ROOT?.trim()
 const source = configuredSource
   ? resolve(configuredSource)
   : resolve(repo, '.build/upstream/deepseek-harness')
 const lock = JSON.parse(await readFile(resolve(repo, 'dsh/upstream.lock.json'), 'utf8'))
 
 if (configuredSource) {
-  if (process.env.FLOWIX_DSH_REQUIRE_PINNED === '1') {
-    throw new Error('FLOWIX_DSH_UPSTREAM_ROOT is not allowed for a pinned DSH production build')
+  if (process.env.FLOWNOTE_DSH_REQUIRE_PINNED === '1') {
+    throw new Error('FLOWNOTE_DSH_UPSTREAM_ROOT is not allowed for a pinned DSH production build')
   }
   if (!existsSync(resolve(source, 'package.json'))) {
-    throw new Error(`FLOWIX_DSH_UPSTREAM_ROOT does not contain a DSH checkout: ${source}`)
+    throw new Error(`FLOWNOTE_DSH_UPSTREAM_ROOT does not contain a DSH checkout: ${source}`)
   }
   console.log(`using configured DSH upstream root ${source}`)
 } else if (isCheckoutAtCommit()) {

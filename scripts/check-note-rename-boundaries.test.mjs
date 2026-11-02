@@ -6,8 +6,8 @@ import test from 'node:test';
 import { checkNoteRenameBoundaries } from './check-note-rename-boundaries.mjs';
 
 test('rejects renamed aliases, bracket access, destructuring, and raw IPC outside the adapter', async () => {
-  const repoRoot = await mkdtemp(join(tmpdir(), 'flowix-rename-boundary-'));
-  const webRoot = join(repoRoot, 'app/flowix-web');
+  const repoRoot = await mkdtemp(join(tmpdir(), 'flownote-rename-boundary-'));
+  const webRoot = join(repoRoot, 'app/flownote-web');
   const write = async (path, content) => {
     const fullPath = join(webRoot, path);
     await mkdir(join(fullPath, '..'), { recursive: true });
@@ -16,7 +16,7 @@ test('rejects renamed aliases, bracket access, destructuring, and raw IPC outsid
   try {
     await writeFile(join(repoRoot, 'tsconfig.json'), JSON.stringify({
       compilerOptions: { target: 'ES2020', module: 'ESNext', moduleResolution: 'Bundler', strict: true, skipLibCheck: true },
-      include: ['app/flowix-web/**/*.ts'],
+      include: ['app/flownote-web/**/*.ts'],
     }), 'utf8');
     await write('platform/tauri/client/desktop.ts', 'export const files = { rename: async (path: string) => path };\n');
     await write('features/document/use-cases/local-document-operations.ts', [

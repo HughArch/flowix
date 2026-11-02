@@ -2,9 +2,9 @@
 
 > 分支 `feat/mobile-ai-fns-draft` · 2026-10-25 · 状态：调研结论，待评审
 >
-> 相关代码：`D:\code\flowix`（客户端）、`D:\code\fast-note-sync-service`（服务端，本机 `localhost:9000`，v3.6.1）
+> 相关代码：`D:\code\flownote`（客户端）、`D:\code\fast-note-sync-service`（服务端，本机 `localhost:9000`，v3.6.1）
 >
-> **2026-10-25 更新（方案对比后）**：本文论证的是「FNS-first」可行性。发现 `flowix-cli` 的 transport-neutral memo 操作层后，移动端 v1 的最终推荐已改为「本地内置 Agent + 复用应用自身 memo 操作层」；本文保留为远端/云端 Agent 的备选方案。对比与推荐见 `MOBILE-AI-SOLUTION-COMPARISON.md`。
+> **2026-10-25 更新（方案对比后）**：本文论证的是「FNS-first」可行性。发现 `flownote-cli` 的 transport-neutral memo 操作层后，移动端 v1 的最终推荐已改为「本地内置 Agent + 复用应用自身 memo 操作层」；本文保留为远端/云端 Agent 的备选方案。对比与推荐见 `MOBILE-AI-SOLUTION-COMPARISON.md`。
 
 ## 0. 结论
 
@@ -17,13 +17,13 @@
 | 服务端笔记 CRUD / 搜索 / 链接 / 文件夹 | 已有完整 REST + MCP 接口 | `internal/routers/router_api.go` |
 | 写入后实时广播 | REST/MCP 写操作都会向该用户所有 WS 连接广播 `NoteSyncModify` | `handler_note.go:263`、`mcp_router/note_tools.go:156` |
 | 客户端常驻实时监听 | 每个绑定 token 一条 WS，收到广播后 500ms 防抖触发增量同步 | `fns_sync/listener.rs` |
-| 增量同步落盘 | 拉取变更 → 通过 `MemoFileStore` 写入本地文件并刷新索引 | `flowix-fns/engine.rs`、`fns_sync/store.rs` |
+| 增量同步落盘 | 拉取变更 → 通过 `MemoFileStore` 写入本地文件并刷新索引 | `flownote-fns/engine.rs`、`fns_sync/store.rs` |
 | 冲突保护 | 默认 `manualMerge`，本地 push 遇到服务端已变更会回 530 | `fns_sync/config.rs:20`、`ws_note.go:140` |
-| 内置 AI ReAct 运行时 | 曾在 `agent_flowix` 中存在，仓库历史可恢复（含 provider / stream / prompt / persistence） | `git show 62301a4a^:app/flowix-desktop/src/agent_flowix` |
+| 内置 AI ReAct 运行时 | 曾在 `agent_flownote` 中存在，仓库历史可恢复（含 provider / stream / prompt / persistence） | `git show 62301a4a^:app/flownote-desktop/src/agent_flownote` |
 
 真正缺的只有三块：
 
-1. **同步落盘后没有 UI 通知。** `MemoFileStore` 写文件时会标记 self-write，watcher 对 Markdown 的 self-write 会直接丢弃，因此不会发 `flowix:path-note-changed`；`reloadOpenDocumentsAfterSync` 目前只被同步面板的手动同步调用。结果是：磁盘已经更新，列表/打开的文档仍显示旧内容。这是 AI 方案必须先补的 P0。
+1. **同步落盘后没有 UI 通知。** `MemoFileStore` 写文件时会标记 self-write，watcher 对 Markdown 的 self-write 会直接丢弃，因此不会发 `flownote:path-note-changed`；`reloadOpenDocumentsAfterSync` 目前只被同步面板的手动同步调用。结果是：磁盘已经更新，列表/打开的文档仍显示旧内容。这是 AI 方案必须先补的 P0。
 2. **移动端没有可用的 AI 运行时。** 当前所有 Agent 都是外部 CLI（`commands/agent/runtime.rs:7` 明确写着「former built-in runtime was removed」），移动端不能执行外部二进制。需要恢复内置 ReAct 运行时，或改为云端 Agent。
 3. **REST 写入是 last-write-wins。** `POST /api/note` 完全忽略 `baseHash`（`handler_note.go:230-263`、`note_service.go:359`），MCP 同理。AI 与用户并发编辑时不会得到 530，而是直接覆盖。需要通过「预同步 + 读后写 + 可选的服务端 CAS」来兜。
 
@@ -73,7 +73,7 @@
 四个容易踩的协议细节：
 
 - **业务成功码是 `code: 1`，不是 `code: 200`。** `pkg/code/common.go:5` 定义 `Success = NewSuss(1)`；`SyncProtocol.md` 里的 `code: 200` 示例是旧描述（`REST_API.md` 的 “200” 只是 HTTP 状态）。客户端应以 `status === true` / `code === 1` 判断成功。
-- **认证头。** 支持 `Authorization: Bearer <token>` 或 `token: <token>`；带 `IssueType=1` 的 token 还要求 `X-Client` 与 scope 的 `c:` 维度匹配。按 Flowix 接入文档，token scope 应为 `p:rest,ws c:flowix f:*`，因此 AI 的 REST 调用必须带 `X-Client: <FnsToken.client_type>`（通常是 `flowix`），否则 `pkg/app/permission.go` 的 `VerifyPermissions` 会失败。
+- **认证头。** 支持 `Authorization: Bearer <token>` 或 `token: <token>`；带 `IssueType=1` 的 token 还要求 `X-Client` 与 scope 的 `c:` 维度匹配。按 Flownote 接入文档，token scope 应为 `p:rest,ws c:flownote f:*`，因此 AI 的 REST 调用必须带 `X-Client: <FnsToken.client_type>`（通常是 `flownote`），否则 `pkg/app/permission.go` 的 `VerifyPermissions` 会失败。
 - 时间戳：REST 写入可以省略 `mtime`/`ctime`，服务端会补当前毫秒时间；不要让 AI 自己生成秒级时间戳（WS 文档里的「秒」是过期描述）。
 - **文档与实现有漂移**：`REST_API.md` 里的 `POST /api/note/move` 在当前服务端没有注册（`router_api.go` 只有 `/note/rename`）。移动笔记请直接用 `rename`，把 `path` 设成目标目录下的新路径。
 
@@ -96,7 +96,7 @@ h.WSS.BroadcastToUser(uid, code.Success.WithData(noteNew).WithVault(params.Vault
 - 每个绑定 token 维持一条常驻 WS；
 - `CHANGE_ACTIONS` 包含 `NoteSyncModify` / `NoteSyncDelete` / `NoteSyncRename` / 文件事件等；
 - 收到广播只做一件事：`schedule_sync_with_delay(..., 500ms)`，不直接应用内容；
-- 真正的合并在 `flowix-fns::engine::sync_notebook` 里，走游标 + hash 比较 + `manualMerge` 冲突处理。
+- 真正的合并在 `flownote-fns::engine::sync_notebook` 里，走游标 + hash 比较 + `manualMerge` 冲突处理。
 
 `MemoFileStore::write_note`（`fns_sync/store.rs:186`）负责把服务端内容写成本地 Markdown，并刷新索引。
 
@@ -115,13 +115,13 @@ if !indexed_resource && is_exact_self_write(...) {
 而 core 的 `resource_kind_for_path`（`memo_file/media_resource.rs:241`）只识别图片/音视频/文档等资源，**不包含 `.md`**。因此：
 
 - 同步写入的 Markdown 事件会被当作 self-write 丢弃；
-- 不会发出 `flowix:path-note-changed`；
+- 不会发出 `flownote:path-note-changed`；
 - 笔记列表、打开的文档、tab 都不会自动更新；
 - `reloadOpenDocumentsAfterSync`（`features/document/public/sync-coordination.ts:63`）目前只在 `sync-status-panel.tsx:252` 等手动同步路径调用。
 
 所以当前「远端改了笔记 → 手机磁盘更新 → 手机界面仍显示旧内容」是既有缺口，AI 会把它放大成核心体验问题。
 
-**P0 修法**：在 engine 增加一个 applied-change sink（或让 `SyncReport` 携带 applied 列表），由 `FnsSyncService` 在同步结束后统一发 `flowix:path-note-changed`。三种语义要分开：
+**P0 修法**：在 engine 增加一个 applied-change sink（或让 `SyncReport` 携带 applied 列表），由 `FnsSyncService` 在同步结束后统一发 `flownote:path-note-changed`。三种语义要分开：
 
 - 新建/修改 → `{ notebookId, relativePath, deleted: false }`（无 `entry`，前端走 query-invalidated + 索引重读）；
 - 删除 → `{ ..., deleted: true }`；
@@ -151,12 +151,12 @@ WS 的冲突保护依赖 `baseHash` + `manualMerge`（`ws_note.go:140`）。REST
 但仓库历史里有一套完整的内置 ReAct agent：
 
 ```
-$ git show 62301a4a^:app/flowix-desktop/src/agent_flowix --stat
+$ git show 62301a4a^:app/flownote-desktop/src/agent_flownote --stat
 context.rs / factory.rs / persistence.rs / provider.rs / stream.rs / tool_runtime.rs
 prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 ```
 
-约 500KB 源码（含测试），依赖 `rllm = "1.1"`（crates.io，已从当前 Cargo.toml 移除但可加回）。前端也曾在 `lib/agent-types.ts` 里有 `flowix` 类型（`assets/flowix-agent.svg` 仍在仓库）。**恢复这套代码比从零写一套 LLM 工具循环便宜得多**，且它已经处理了流式、持久化、token 预算、卡死熔断、停止/恢复。
+约 500KB 源码（含测试），依赖 `rllm = "1.1"`（crates.io，已从当前 Cargo.toml 移除但可加回）。前端也曾在 `lib/agent-types.ts` 里有 `flownote` 类型（`assets/flownote-agent.svg` 仍在仓库）。**恢复这套代码比从零写一套 LLM 工具循环便宜得多**，且它已经处理了流式、持久化、token 预算、卡死熔断、停止/恢复。
 
 ---
 
@@ -187,19 +187,19 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 │  移动端 AI 面板（复用会话壳，新增 builtin runtime）                 │
 │        │                                                           │
 │        ▼                                                           │
-│  内置 ReAct Agent（恢复 agent_flowix：provider / stream / prompt） │
+│  内置 ReAct Agent（恢复 agent_flownote：provider / stream / prompt） │
 │        │  tool calls                                               │
 │        ▼                                                           │
 │  FNS 工具层（当前笔记本 → token + vault；路径沙箱；读写分级）      │
 │        │  HTTP /api/*                                              │
 │        ▼                                                           │
-│  flowix-fns::api（REST client）                                     │
+│  flownote-fns::api（REST client）                                     │
 │                                                                    │
 │  ── 以下为既有链路，仅补事件 ────────────────────────────────────  │
 │  listener（常驻 WS）──▶ 500ms 防抖 ──▶ engine 增量同步             │
 │        ──▶ MemoFileStore 写盘 + 索引                               │
 │        ──▶ [新增] applied-change sink ──▶ service 统一发事件       │
-│                    ──▶ flowix:path-note-changed                    │
+│                    ──▶ flownote:path-note-changed                    │
 │                    ──▶ 列表/tab/编辑器刷新                         │
 └────────────────────────────────────────────────────────────────────┘
                               │
@@ -217,7 +217,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
   │
   ├─ 2. LLM → tool_call: note_append(path, content)
   │       REST POST /api/note/append
-  │       headers: Authorization: Bearer <token>, X-Client: flowix
+  │       headers: Authorization: Bearer <token>, X-Client: flownote
   │
   ├─ 3. 服务端：写库 + 历史 + BroadcastToUser("NoteSyncModify", vault)
   │
@@ -226,7 +226,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
   │
   ├─ 5. store 写盘 + refresh index + 标记 self-write
   │       [新增] engine 收集 applied 变更 → service 同步结束后 emit
-  │       flowix:path-note-changed { notebookId, relativePath, deleted:false }
+  │       flownote:path-note-changed { notebookId, relativePath, deleted:false }
   │
   └─ 6. 前端：列表刷新；若该文档干净则 reload；若脏则提示冲突，不覆盖
 ```
@@ -250,7 +250,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 
 **不给 LLM 的：**
 - 任意 `vault` 参数（由当前笔记本绑定决定，防止跨库写入）；
-- 绝对路径 / `..` / `.flowix/` / 隐藏目录；
+- 绝对路径 / `..` / `.flownote/` / 隐藏目录；
 - 附件上传（v1.1 再评估）；
 - shell、网络请求、任意文件系统访问（旧内置 agent 的 `shell` / `web_search` / `filesystem` 工具在移动端不注册）。
 
@@ -260,7 +260,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 
 ### 5.1 用 REST，不用 MCP
 
-- 按接入文档，Flowix token 的 scope 是 `p:rest,ws`，**没有 `p:mcp`**；走 MCP 要求用户重新签发 token，且 MCP 还多一层 session/transport。
+- 按接入文档，Flownote token 的 scope 是 `p:rest,ws`，**没有 `p:mcp`**；走 MCP 要求用户重新签发 token，且 MCP 还多一层 session/transport。
 - REST 的端点比 MCP 工具更全（MCP 没有 `note/histories`、`folder/tree`、`folder/create/list` 等；移动笔记两边都走 `rename`）。
 - MCP 仍是有价值的后续路径：给桌面/云端 Agent 做「零客户端代码」接入时再用。工具层可以设计成与传输无关，届时复用。
 
@@ -279,7 +279,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 
 ### 5.3 AI 运行时：v1 内置，后续可云端
 
-- **v1 推荐**：恢复 `agent_flowix` 为内置 runtime，用户在偏好里配置 OpenAI-compatible / DeepSeek provider。`AiModelConfig` 仍在当前 `config/user.rs` 里；`rllm = "1.1"` 需要加回 `Cargo.toml`。
+- **v1 推荐**：恢复 `agent_flownote` 为内置 runtime，用户在偏好里配置 OpenAI-compatible / DeepSeek provider。`AiModelConfig` 仍在当前 `config/user.rs` 里；`rllm = "1.1"` 需要加回 `Cargo.toml`。
 - 移动端只暴露这一个 builtin agent；外部 CLI agent 继续隐藏（`f82d3b3f` 的逻辑保留）。
 - 后续若做云端 Agent，工具层可以换成 MCP 或服务端 REST，客户端只负责展示——这也是 server-first 的额外收益。
 
@@ -293,7 +293,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 
 ### 5.5 UI 投影
 
-- 后端在同步应用变更后发 `flowix:path-note-changed`，**不要**调用 `emit_path_changed_with_content`（它会再次调度同步）。
+- 后端在同步应用变更后发 `flownote:path-note-changed`，**不要**调用 `emit_path_changed_with_content`（它会再次调度同步）。
 - 事件由 engine 的 applied-change sink 收集、service 统一发；重命名要发 `path-moved` 语义，不能拆成 create+delete。
 - 前端复用现有投影：
   - `memo-list-refresh-service` → 列表刷新；
@@ -310,7 +310,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 
 - **token 永不进入 LLM 上下文**：工具在设备内执行，LLM 只看到工具结果。
 - 工具绑定当前笔记本的 `vault` 与 token，LLM 不可指定 vault。
-- 路径沙箱与 `MemoFileStore::resolve` 一致：拒绝绝对路径、`..`、`.flowix`、隐藏目录。
+- 路径沙箱与 `MemoFileStore::resolve` 一致：拒绝绝对路径、`..`、`.flownote`、隐藏目录。
 - 删除/重命名/移动默认需要用户确认（可在设置里放开「AI 自动写入」）；删除是软删除，另有历史版本。
 - 服务端日志通过 `X-Client-Name` / `X-Client-Version` 区分 AI 操作，便于审计。
 - 后续可给 AI 单独签发 `f:note_rw,file_r` + vault 白名单的 token，替代复用同步 token。
@@ -321,13 +321,13 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 
 ### P0 — 可行性验证（不接 LLM）
 
-1. `flowix-fns` 新增 `api` 模块（`reqwest` + serde）：
+1. `flownote-fns` 新增 `api` 模块（`reqwest` + serde）：
    - 认证头、`X-Client`、成功码 `code==1`、错误映射；
    - `GET /api/note`、`GET /api/notes`、`POST /api/note`、`DELETE /api/note`。
 2. 一个调试入口（CLI 子命令或临时 IPC），在已绑定的笔记本上跑：读 → 写 → 删除。
 3. 补 UI 投影事件：
-   - `flowix-fns/engine.rs` 增加 applied-change sink（写/删/重命名分别记录，重命名保留旧路径）；
-   - `fns_sync/service.rs` 在同步结束后 emit `flowix:path-note-changed`；
+   - `flownote-fns/engine.rs` 增加 applied-change sink（写/删/重命名分别记录，重命名保留旧路径）；
+   - `fns_sync/service.rs` 在同步结束后 emit `flownote:path-note-changed`；
    - 前端验证列表、打开文档、tab 三条路径。
 4. 验收：
    - REST 写 → 本地文件变化 ≤ 2s；
@@ -337,7 +337,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 
 ### P1 — 移动端 AI MVP
 
-1. 恢复 `agent_flowix`（从 `62301a4a^`）为 `agent_builtin`，加回 `rllm = "1.1"`；移除移动端不注册的 `filesystem` / `shell` / `web_search` / `sub_agent` 工具，新增 `tools/fns.rs`。
+1. 恢复 `agent_flownote`（从 `62301a4a^`）为 `agent_builtin`，加回 `rllm = "1.1"`；移除移动端不注册的 `filesystem` / `shell` / `web_search` / `sub_agent` 工具，新增 `tools/fns.rs`。
 2. 后端：
    - 解析当前笔记本的 `SyncState`（token_id + vault）；
    - 新增 IPC：`agent_builtin_chat_stream` / stop / provider 配置；
@@ -347,7 +347,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
    - `POST /api/note` 支持 `baseHash` CAS，冲突回 530 + 三段内容；
    - 保持不带 `baseHash` 的旧行为。
 4. 前端：
-   - `types/agent.ts` / `lib/agent-types.ts` 恢复 `flowix` 类型；
+   - `types/agent.ts` / `lib/agent-types.ts` 恢复 `flownote` 类型；
    - 移动端只展示 builtin agent，重新放开创建菜单/会话入口/slash menu 的 agent 项；
    - provider/model/key 设置页（复用旧 `AiModelConfig`）；
    - 工具调用展示（复用现有 tool-display）；
@@ -391,7 +391,7 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 **单元 / 集成**
 
 - REST client：认证头、成功码、错误码、超时、URL 拼接；
-- 路径沙箱：`../`、绝对路径、`.flowix`、隐藏目录全部拒绝；
+- 路径沙箱：`../`、绝对路径、`.flownote`、隐藏目录全部拒绝；
 - 工具层：`createOnly`、读后写、CAS 冲突映射；
 - 同步事件：写/删/重命名各发一次正确 payload；无重复、无回环；
 - 前端：列表刷新、干净文档 reload、脏文档不覆盖、删除关闭 tab、重命名 rebase。
@@ -437,14 +437,14 @@ prompt/ / providers/openai_compatible/ / tools/ / state.rs / wire.rs
 | MCP 写 + 广播 | `internal/routers/mcp_router/note_tools.go:116-163` |
 | 成功码 / 权限 | `pkg/code/common.go:5`、`pkg/app/permission.go` |
 | REST 认证 | `internal/middleware/user_auth_token.go:68-132` |
-| 客户端 WS 连接 | `app/flowix-fns/src/client.rs` |
-| 实时监听 | `app/flowix-desktop/src/fns_sync/listener.rs` |
-| 同步落盘 | `app/flowix-fns/src/engine.rs`、`app/flowix-desktop/src/fns_sync/store.rs` |
-| self-write 抑制 | `app/flowix-desktop/src/watcher/manager.rs:756`、`flowix-core/src/memo_file/media_resource.rs:241` |
-| 冲突策略默认值 | `app/flowix-desktop/src/fns_sync/config.rs:20` |
-| 旧内置 agent（可恢复） | `git show 62301a4a^:app/flowix-desktop/src/agent_flowix` |
+| 客户端 WS 连接 | `app/flownote-fns/src/client.rs` |
+| 实时监听 | `app/flownote-desktop/src/fns_sync/listener.rs` |
+| 同步落盘 | `app/flownote-fns/src/engine.rs`、`app/flownote-desktop/src/fns_sync/store.rs` |
+| self-write 抑制 | `app/flownote-desktop/src/watcher/manager.rs:756`、`flownote-core/src/memo_file/media_resource.rs:241` |
+| 冲突策略默认值 | `app/flownote-desktop/src/fns_sync/config.rs:20` |
+| 旧内置 agent（可恢复） | `git show 62301a4a^:app/flownote-desktop/src/agent_flownote` |
 | 移动端 AI 隐藏 | commit `f82d3b3f` |
-| 前端同步协调 | `app/flowix-web/features/document/public/sync-coordination.ts` |
+| 前端同步协调 | `app/flownote-web/features/document/public/sync-coordination.ts` |
 
 ## 附录 B：为什么不是「让 AI 直接写本地文件」
 

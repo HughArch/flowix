@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="./docs/images/app-icon.png" width="120" alt="Flowix" />
+  <img src="./docs/images/app-icon.png" width="120" alt="Flownote" />
 </p>
 
 <h1 align="center">你的笔记，<br />AI 的记忆。</h1>
@@ -15,20 +15,20 @@
 </p>
 
 <p align="center">
-  <a href="https://flowix-memo.com/"><b>立即下载</b></a> ·
-  <a href="https://flowix-memo.com/"><b>官网</b></a> ·
-  <a href="https://flowix-memo.com/docs/"><b>文档</b></a>
+  <a href="https://flownote-memo.com/"><b>立即下载</b></a> ·
+  <a href="https://flownote-memo.com/"><b>官网</b></a> ·
+  <a href="https://flownote-memo.com/docs/"><b>文档</b></a>
 </p>
 
 ---
 
-<img src="./docs/images/readme-introduce.gif" width="100%" alt="Flowix" />
+<img src="./docs/images/readme-introduce.gif" width="100%" alt="Flownote" />
 
-## Flowix 让笔记成为持续工作的记忆
+## Flownote 让笔记成为持续工作的记忆
 
 用 Markdown 记录内容，把需要的上下文交给 Agent，再将结果写回同一篇笔记，方便检查、修改和下次继续使用。
 
-<img src="./docs/images/home-write.png" width="100%" alt="Flowix 笔记在浅色与深色主题中的界面" />
+<img src="./docs/images/home-write.png" width="100%" alt="Flownote 笔记在浅色与深色主题中的界面" />
 
 ---
 
@@ -43,52 +43,52 @@
 | **课题研究** | 将资料、分析和结论放在一起，方便追溯和复用。 |
 | **个人知识** | 让笔记、计划和个人偏好成为 Agent 可用的上下文。 |
 
-<p align="center"><img src="./docs/images/home-nav.png" width="60%" alt="Flowix 中的笔记、对话、任务与标签导航" /></p>
+<p align="center"><img src="./docs/images/home-nav.png" width="60%" alt="Flownote 中的笔记、对话、任务与标签导航" /></p>
 
 ---
 
 ## 让不同 Agent 使用同一份记忆
 
-你可以在 Flowix 内使用 Agent，也可以连接 **Codex**、**Claude Code**、**OpenCode**、**Hermes** 及其他 MCP 或 CLI 工具，让它们基于同一套笔记和上下文工作。
+你可以在 Flownote 内使用 Agent，也可以连接 **Codex**、**Claude Code**、**OpenCode**、**Hermes** 及其他 MCP 或 CLI 工具，让它们基于同一套笔记和上下文工作。
 
-<p align="center"><img src="./docs/images/home-agent.png" width="60%" alt="Flowix 将 Codex、Claude Code、OpenCode、Hermes 和 Flowix Agent 连接到同一篇笔记" /></p>
-
----
-
-## 加入 Flowix 社群
-
-扫描下方二维码加入交流群，一起交流和讨论 Flowix。
-
-<p align="center"><img src="./docs/images/community-qr.png" width="240" alt="Flowix 交流群二维码" /></p>
+<p align="center"><img src="./docs/images/home-agent.png" width="60%" alt="Flownote 将 Codex、Claude Code、OpenCode、Hermes 和 Flownote Agent 连接到同一篇笔记" /></p>
 
 ---
 
-## dsh-flowix-memory 插件
+## 加入 Flownote 社群
 
-[dsh-flowix-memory](dsh-flowix-memory/README.md) 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件，通过捆绑的 `flowix-cli` MCP server 把任何 Harness Agent 连接到你的**本地 Flowix 笔记**：安装后 Agent 获得 `mcp__flowix__memo` 工具，可搜索、读取、创建和编辑 Flowix 笔记（包括思维导图）。
+扫描下方二维码加入交流群，一起交流和讨论 Flownote。
 
-从 flowix-main checkout 安装到 `flowix` Harness profile（尚未发布到 npm）。对于其他 DSH 客户端，`flowix` 只是一个普通的自定义 profile 名称：
+<p align="center"><img src="./docs/images/community-qr.png" width="240" alt="Flownote 交流群二维码" /></p>
+
+---
+
+## dsh-flownote-memory 插件
+
+[dsh-flownote-memory](dsh-flownote-memory/README.md) 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件，通过捆绑的 `flownote-cli` MCP server 把任何 Harness Agent 连接到你的**本地 Flownote 笔记**：安装后 Agent 获得 `mcp__flownote__memo` 工具，可搜索、读取、创建和编辑 Flownote 笔记（包括思维导图）。
+
+从 flownote-main checkout 安装到 `flownote` Harness profile（尚未发布到 npm）。对于其他 DSH 客户端，`flownote` 只是一个普通的自定义 profile 名称：
 
 ```sh
-dsh plugin --profile flowix add ./dsh-flowix-memory
+dsh plugin --profile flownote add ./dsh-flownote-memory
 ```
 
-需要 `flowix` CLI 位于 `PATH`（或设置 `FLOWIX_CLI_PATH`），并可访问你的笔记数据（`~/.flowix`）。详见[插件 README](dsh-flowix-memory/README.md)。
+需要 `flownote` CLI 位于 `PATH`（或设置 `FLOWNOTE_CLI_PATH`），并可访问你的笔记数据（`~/.flownote`）。详见[插件 README](dsh-flownote-memory/README.md)。
 
 ## 通过 CLI 传递 Markdown
 
 向 `create` 和 `write` 传递 Markdown 正文时，推荐使用 UTF-8 文件，尤其是在 Windows PowerShell 5.1 中。这样可以避免 stdin 管道编码导致中文内容损坏。支持带 BOM 和不带 BOM 的 UTF-8 文件。
 
 ```powershell
-flowix create <notebook> --file body.md --json
-flowix write <id> --file body.md --json
+flownote create <notebook> --file body.md --json
+flownote write <id> --file body.md --json
 ```
 
 在 Windows 上，未指定输入方式时 CLI 会拒绝隐式读取 stdin，以避免 PowerShell 5.1 的 `$OutputEncoding` 损坏中文；已确认 stdin 为 UTF-8 时请显式加 `--stdin`：
 
 ```powershell
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-Get-Content -Raw -Encoding UTF8 body.md | flowix create <notebook> --stdin --json
+Get-Content -Raw -Encoding UTF8 body.md | flownote create <notebook> --stdin --json
 ```
 
 `--file` 与 `--stdin` 互斥。`--file` 会直接按 UTF-8 读取；文件不存在、无法读取或不是有效 UTF-8 时，CLI 会返回错误。使用 `--json` 时错误也会以 `{ok:false,error:{code,message}}` 输出。
@@ -97,7 +97,7 @@ Get-Content -Raw -Encoding UTF8 body.md | flowix create <notebook> --stdin --jso
 
 ## 笔记留在本地，由你掌控
 
-Flowix 将笔记保存为本地 Markdown 文件。你决定 Agent 能看到什么，也可以自由选择同步和备份方式。
+Flownote 将笔记保存为本地 Markdown 文件。你决定 Agent 能看到什么，也可以自由选择同步和备份方式。
 
 - **保存在本地** — 笔记是普通 Markdown 文件，可以用其他应用打开和编辑。
 - **按需连接 Agent** — 使用 Codex、Claude Code、OpenCode 等 Agent 时，只提供你主动选择的内容。
@@ -117,7 +117,7 @@ Flowix 将笔记保存为本地 Markdown 文件。你决定 Agent 能看到什�
 
 ## 快速开始
 
-1. 从 [官网](https://flowix-memo.com/) 下载并安装 Flowix。
+1. 从 [官网](https://flownote-memo.com/) 下载并安装 Flownote。
 2. 新建一个本地文件夹，或将已有文件夹注册为笔记本。
 3. 创建一篇文档，记录任务背景、参考资料、目标与约束。
 4. 在文档内调用 Agent，或继续用标签与属性组织内容。
@@ -125,8 +125,8 @@ Flowix 将笔记保存为本地 Markdown 文件。你决定 Agent 能看到什�
 ## 本地开发
 
 ```bash
-git clone https://github.com/text2future/flowix.git
-cd flowix
+git clone https://github.com/text2future/flownote.git
+cd flownote
 npm install
 
 npm run tauri:dev
@@ -141,4 +141,4 @@ npm run tauri:build:prod
 
 ## 许可协议
 
-Flowix 基于 MIT 协议开源。
+Flownote 基于 MIT 协议开源。

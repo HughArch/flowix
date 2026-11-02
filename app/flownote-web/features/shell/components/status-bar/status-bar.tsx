@@ -1,0 +1,274 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import { Info, ListTodo } from 'lucide-react';
+import { ArrowsClockwiseIcon } from '@phosphor-icons/react';
+import type { CSSProperties } from 'react';
+import mcpPluginIcon from '@/assets/mcp-plugin.svg';
+import { Tooltip } from '@shared/ui/tooltip';
+import { isMobileDevice } from '@shared/platform';
+import type { Notebook } from '@features/memo/store/note-store';
+import { NotebookSelectorPopup } from '@features/shell/components/status-bar/notebook-selector-popup';
+import { ProductUpdatePill } from '@features/shell/components/status-bar/product-update-pill';
+import { ProductIntroDialog } from '@features/shell/components/status-bar/product-intro-dialog';
+import {
+  AgentConversationStatusBar,
+  AgentIcon,
+  createAndOpenPiConversation,
+} from '@features/agent/public/shell-api';
+import { useMobileAgentPanelStore } from '@features/agent/components/mobile-agent-panel';
+import { toast } from '@/lib/toast';
+import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
+import { normalizeAgentRuntimeStatus } from '@features/agent/runtime/agent-runtime-status';
+import { useI18n } from '@/lib/i18n';
+import { useDocumentMetricsStore } from '@features/document/store/document-metrics-store';
+import { useNoteStore } from '@features/memo/store/note-store';
+import { fns } from '@platform/tauri/client';
+import { TagSvgIcon } from '@shared/ui/tag-icon';
+import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
+import { useSyncPanelStore } from '@features/sync-status';
+
+/// True while the selected notebook has unresolved sync conflicts or the
+/// last sync attempt failed — drives the red dot on the sync entry button.
+/// Polls on a slow interval; the payloads are tiny IPC reads.
+function useSyncAttention(): boolean {
+  const [attention, setAttention] = useState(false);
+  const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const [status, conflicts] = await Promise.all([
+          fns.getStatus(),
+          selectedNotebookId
+            ? fns.listConflicts(selectedNotebookId).catch(() => [])
+            : Promise.resolve([]),
+        ]);
+        if (!cancelled) {
+          setAttention(conflicts.length > 0 || status.consecutiveFailures > 0);
+        }
+      } catch {
+        // Keep the last known state; a transient IPC failure must not clear
+        // a badge the user has not seen yet.
+      }
+    };
+    void check();
+    const timer = setInterval(() => void check(), 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [selectedNotebookId]);
+
+  return attention;
+}
+
+/// Bottom-right sync entry: opens the sync panel; shows a red dot while
+/// there is something the user should look at (pending conflicts or a
+/// failed sync).
+function SyncEntryButton() {
+  const { t } = useI18n();
+  const attention = useSyncAttention();
+  return (
+    <Tooltip content={t('sync.panel.open')} side="top">
+      <button
+        type="button"
+        onClick={() => useSyncPanelStore.getState().toggle()}
+        className="relative h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+        aria-label={t('sync.panel.open')}
+      >
+        <ArrowsClockwiseIcon className="h-3.5 w-3.5" />
+        {attention && (
+          <span
+            aria-hidden="true"
+            className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--destructive)]"
+          />
+        )}
+      </button>
+    </Tooltip>
+  );
+}
+
+interface StatusBarProps {
+  onSelectNotebook: (notebook: Notebook) => void;
+  onEditNotebook: (notebook: Notebook) => void;
+  onDeleteNotebook: (notebook: Notebook) => void;
+  onCreateNotebook: () => void;
+  onOpenTodos: () => void;
+  onOpenTagPanel: () => void;
+  productIntroOpen: boolean;
+  onProductIntroOpenChange: (open: boolean) => void;
+  onOpenMcpPreferences: () => void;
+  updater: AppUpdaterState;
+}
+
+function PiRuntimeStatusIndicator() {
+  const { t } = useI18n();
+  const piStatus = useAgentRuntimeStore((state) => state.statusByType.pi);
+  const isChecking = useAgentRuntimeStore((state) => state.isChecking);
+
+  const runtimeStatus = normalizeAgentRuntimeStatus(piStatus, isChecking);
+  const statusText = runtimeStatus.state === 'ready'
+    ? t('agent.status.available')
+    : runtimeStatus.state === 'checking'
+      ? t('agent.status.checking')
+      : runtimeStatus.state === 'unknown'
+        ? t('agent.status.notChecked')
+        : t('agent.status.setup');
+  const label = `${t('agent.types.pi.name')} · ${statusText}`;
+
+  return (
+    <Tooltip content={label} side="top">
+      <button
+        type="button"
+        onClick={createAndOpenPiConversation}
+        className="h-full flex items-center justify-center px-1.5 py-0 hover:bg-[var(--muted)]"
+        aria-label={label}
+      >
+        <AgentIcon typeKey="pi" alt="" className="h-3.5 w-3.5" />
+      </button>
+    </Tooltip>
+  );
+}
+
+/**
+ * Bottom status bar for the main window.
+ *
+ * Layout (two columns):
+ *   [NotebookSwitcher] | [Todos] [char count]   …flex spacer…   [Note Nav] [AI Chat] [⚙]
+ *
+ * The left column is the notebook switcher (fixed width by its own button
+ * content); the right column takes the remaining width for the status actions.
+ *
+ * Renders no chrome of its own — it assumes it lives in a `h-[26px]` flex strip.
+ */
+export function StatusBar({
+  onSelectNotebook,
+  onEditNotebook,
+  onDeleteNotebook,
+  onCreateNotebook,
+  onOpenTodos,
+  onOpenTagPanel,
+  productIntroOpen,
+  onProductIntroOpenChange,
+  onOpenMcpPreferences,
+  updater,
+}: StatusBarProps) {
+  const { t } = useI18n();
+  const statusBarRightEdgeRef = useRef<HTMLDivElement>(null);
+  const [notebookPopupOpen, setNotebookPopupOpen] = useState(false);
+  const notebooks = useNoteStore((state) => state.notebooks);
+  const selectedNotebook = useNoteStore((state) => state.selectedNotebook);
+  const setNotebooks = useNoteStore((state) => state.setNotebooks);
+  const charCount = useDocumentMetricsStore((state) => state.charCount);
+
+  useEffect(() => {
+    const handleToggle = () => setNotebookPopupOpen((open) => !open);
+    window.addEventListener('flownote:toggle-notebook-switcher', handleToggle);
+    return () => window.removeEventListener('flownote:toggle-notebook-switcher', handleToggle);
+  }, []);
+
+  return (
+    <div className="flex h-[26px] shrink-0 select-none items-stretch text-xs text-[var(--muted-foreground)]">
+      {/* Left column: notebook switcher (fixed width by its own button content). */}
+      <div className="shrink-0 flex items-center">
+        <NotebookSelectorPopup
+          open={notebookPopupOpen}
+          onOpenChange={setNotebookPopupOpen}
+          notebooks={notebooks}
+          selectedNotebook={selectedNotebook}
+          onSelect={onSelectNotebook}
+          onEdit={onEditNotebook}
+          onDelete={onDeleteNotebook}
+          onCreateNotebook={onCreateNotebook}
+          onRefresh={setNotebooks}
+        />
+      </div>
+      {/* Right column: full-width content area. */}
+      <div ref={statusBarRightEdgeRef} className="flex-1 min-w-0 flex items-center gap-0.5 pl-0.5 pr-2">
+        <Tooltip content={t('shell.statusBar.noteNavTooltip')} shortcut="panel.noteNavigation.toggle">
+          <button
+            type="button"
+            onClick={onOpenTagPanel}
+            className="h-full flex items-center gap-0.5 px-1.5 py-0 hover:bg-[var(--muted)]"
+            aria-label={t('shell.statusBar.noteNav')}
+          >
+            <TagSvgIcon className="w-4 h-4" />
+          </button>
+        </Tooltip>
+        <button
+          type="button"
+          className="h-full inline-flex items-center gap-0.5 px-1.5 text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+          aria-label={t('status.todos')}
+          onClick={onOpenTodos}
+        >
+          <ListTodo className="w-3.5 h-3.5 shrink-0" />
+        </button>
+        {/* 移动端 v1 无 AI 服务: 不渲染会话入口。 */}
+        {!isMobileDevice() && <AgentConversationStatusBar />}
+        <div className="flex-1" />
+        <ProductUpdatePill updater={updater} anchor={statusBarRightEdgeRef} />
+        {charCount > 0 && (
+          <span className="h-full inline-flex items-center gap-0.5 px-1.5 text-[var(--muted-foreground)] hover:bg-[var(--muted)]">
+            {t('status.characters')}{' '}
+            <span className="font-mono tabular-nums">{charCount}</span>
+          </span>
+        )}
+        {/* 移动端 v1 无 AI 服务: 不渲染 PI 运行时入口。 */}
+        {!isMobileDevice() && <PiRuntimeStatusIndicator />}
+        <SyncEntryButton />
+        {/* 移动端：插头（MCP）入口替换为 AI 侧边栏入口 —— 打开与当前文档
+            关联的内置助手会话。同步面板仍可从右缘滑动手势打开。 */}
+        {isMobileDevice() ? (
+          <Tooltip content={t('agent.mobilePanel.title')} side="top">
+            <button
+              type="button"
+              onClick={() => {
+                void useMobileAgentPanelStore
+                  .getState()
+                  .openForCurrentDocument()
+                  .then((opened) => {
+                    if (!opened) toast.error(t('agent.mobilePanel.openDocumentFirst'));
+                  });
+              }}
+              className="h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+              aria-label={t('agent.mobilePanel.title')}
+            >
+              <AgentIcon typeKey="flownote" alt="" className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        ) : (
+          <Tooltip content={t('preferences.tabs.mcp')} side="top">
+          <button
+            type="button"
+            onClick={onOpenMcpPreferences}
+            className="h-full flex items-center justify-center px-1.5 py-0 hover:bg-[var(--muted)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+            aria-label={t('preferences.tabs.mcp')}
+          >
+            <span
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 bg-current"
+              style={{
+                mask: `url("${mcpPluginIcon}") center / contain no-repeat`,
+                WebkitMask: `url("${mcpPluginIcon}") center / contain no-repeat`,
+              } as CSSProperties}
+            />
+          </button>
+        </Tooltip>
+        )}
+        <Tooltip content={t('shell.productIntro.button')} side="top">
+          <button
+            type="button"
+            onClick={() => onProductIntroOpenChange(true)}
+            className="h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+            aria-label={t('shell.productIntro.button')}
+          >
+            <Info className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </Tooltip>
+      </div>
+      <ProductIntroDialog open={productIntroOpen} onOpenChange={onProductIntroOpenChange} />
+    </div>
+  );
+}
