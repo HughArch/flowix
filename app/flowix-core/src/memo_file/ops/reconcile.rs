@@ -216,6 +216,11 @@ impl MemoFile {
                     .map(|path| path.to_string_lossy().replace('\\', "/"));
                 match (old_relative, new_relative) {
                     (Some(old), Some(new)) => {
+                        if crate::canvas::is_canvas_path(&old) {
+                            if let Err(error) = self.move_path_archive(notebook_id, &old, &new) {
+                                tracing::warn!(notebook_id, relative_path = %new, "canvas version archive could not follow the rename: {error}");
+                            }
+                        }
                         let old_indexed = crate::memo_file::resource_kind_for_path(source).is_some();
                         let new_indexed = crate::memo_file::resource_kind_for_path(target).is_some();
                         if old_indexed && new_indexed {

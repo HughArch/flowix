@@ -38,7 +38,8 @@ pub fn restore_local_path_version(
         .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
     let root = Path::new(&notebook.path);
     let attachment = relative_path.starts_with("attachments/");
-    if !attachment && !Path::new(&relative_path).is_md() {
+    let is_canvas = flowix_core::canvas::is_canvas_path(&relative_path);
+    if !attachment && !is_canvas && !Path::new(&relative_path).is_md() {
         return Err("HISTORY_INVALID_PATH".into());
     }
     let path = safe_archive_path(root, &relative_path, attachment)?;
@@ -88,6 +89,14 @@ pub fn restore_local_path_version(
             "media-properties-changed",
             serde_json::json!({ "notebookId": notebook_id }),
         );
+    } else if is_canvas {
+        // Canvases live outside the note index; the path event alone tells
+        // open boards and browsers to reload.
+        crate::commands::path_change::NotebookPathInvalidated::new(
+            notebook_id.clone(),
+            relative_path.clone(),
+        )
+        .emit(&app);
     } else {
         memo_file
             .refresh_note_path(&notebook_id, &relative_path)
@@ -110,7 +119,7 @@ enum RestoreOutcome {
 /// components, symlinks, and paths outside the notebook root.
 fn safe_archive_path(root: &Path, relative_path: &str, attachment: bool) -> Result<PathBuf, String> {
     let candidate = Path::new(relative_path);
-    if (!attachment && !candidate.is_md())
+    if (!attachment && !candidate.is_md() && !flowix_core::canvas::is_canvas_path(relative_path))
         || (attachment && !relative_path.starts_with("attachments/"))
         || relative_path.contains('\\')
         || relative_path.starts_with('/')

@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight, Loader2 } from 'lucide-react';
 import { ClockIcon, CloudArrowUpIcon } from '@phosphor-icons/react';
 import { fns as fnsClient, notes as notesClient, type FnsCloudVersionMeta, type PathVersionMeta } from '@platform/tauri/client';
-import { useI18n, translate, type AppLanguage, type I18nKey } from '@/lib/i18n';
+import { useI18n, translate, type AppLanguage, type I18nKey, type I18nParams } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
-import { Dialog, DialogContent, DialogTitle } from '@shared/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { useMobileBackInterceptor } from '@features/shell/hooks/use-mobile-back-button';
 
 type VersionDisplay = PathVersionMeta;
@@ -299,6 +299,41 @@ export function VersionHistoryDialog({
               onSelectVersion(version);
             }}
           />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** 恢复确认弹窗: 文档标题栏与画布共用一份文案与禁用态。 */
+export function VersionRestoreConfirmDialog({
+  version,
+  restoring,
+  onCancel,
+  onConfirm,
+}: {
+  version: VersionDisplay | null;
+  restoring: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t, language } = useI18n();
+  return (
+    <Dialog open={!!version} onOpenChange={(open) => !open && onCancel()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('document.version.confirmTitle')}</DialogTitle>
+          <DialogDescription>{t('document.version.confirmDescription', {
+            time: version ? formatVersionTime(version.createdAt, language) : '',
+          } satisfies I18nParams)}</DialogDescription>
+        </DialogHeader>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" disabled={restoring} onClick={onCancel} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)] disabled:opacity-60">
+            {t('document.version.cancel')}
+          </button>
+          <button type="button" disabled={restoring} onClick={onConfirm} className="h-8 rounded-lg bg-[var(--primary)] px-3 text-sm text-[var(--primary-foreground)] disabled:opacity-60">
+            {t('document.version.confirm')}
+          </button>
         </div>
       </DialogContent>
     </Dialog>

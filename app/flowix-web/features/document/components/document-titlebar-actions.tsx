@@ -16,7 +16,7 @@ import { DocumentPageWidthSlider } from './document-page-width-slider';
 import { NoteColorSwatchRow } from './document-titlebar-controls';
 import {
   CloudHistorySubmenu, CloudHistoryDialog,
-  VersionHistorySubmenu, VersionHistoryDialog, formatVersionTime,
+  VersionHistorySubmenu, VersionHistoryDialog, VersionRestoreConfirmDialog, formatVersionTime,
 } from './document-version-history-menu';
 import { DocumentShareDialog } from './document-share-dialog';
 import { useDocumentTitlebarActions } from './use-document-titlebar-actions';
@@ -344,24 +344,12 @@ export function DocumentTitlebarActions({
           </div>
         </DialogContent>
       </Dialog>}
-      <Dialog open={!!confirmVersion} onOpenChange={(open) => !open && setConfirmVersion(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('document.version.confirmTitle')}</DialogTitle>
-            <DialogDescription>{t('document.version.confirmDescription', {
-              time: confirmVersion ? formatVersionTime(confirmVersion.createdAt, language) : '',
-            } satisfies I18nParams)}</DialogDescription>
-          </DialogHeader>
-          <div className="mt-4 flex justify-end gap-2">
-            <button type="button" disabled={!!restoringVersionId} onClick={() => setConfirmVersion(null)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)] disabled:opacity-60">
-              {t('document.version.cancel')}
-            </button>
-            <button type="button" disabled={!!restoringVersionId} onClick={() => { void restorePathVersion(); }} className="h-8 rounded-lg bg-[var(--primary)] px-3 text-sm text-[var(--primary-foreground)] disabled:opacity-60">
-              {t('document.version.confirm')}
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <VersionRestoreConfirmDialog
+        version={confirmVersion}
+        restoring={!!restoringVersionId}
+        onCancel={() => setConfirmVersion(null)}
+        onConfirm={() => { void restorePathVersion(); }}
+      />
       {canViewVersionHistory && target.notebookId && target.relativePath && (
         <>
           <VersionHistoryDialog

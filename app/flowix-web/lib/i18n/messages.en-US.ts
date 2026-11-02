@@ -1428,6 +1428,8 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "canvas.save.failed": "Failed to save the canvas",
     "canvas.save.filesDropped": "{count} image(s) were too large to keep in the canvas",
     "canvas.board.save": "Save & sync",
+    "canvas.version.archive": "Save local archive",
+    "canvas.version.archived": "Local archive saved",
     "canvas.board.doubleClickOpen": "Double-click to open the note",
     "canvas.board.tool.rect": "Rectangle",
     "canvas.board.tool.ellipse": "Ellipse",

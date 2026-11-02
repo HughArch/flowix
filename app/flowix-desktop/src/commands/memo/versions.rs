@@ -18,7 +18,8 @@ fn path_archive_document(state: &AppState, notebook_id: &str, relative_path: &st
     let notebook = memo_file.get_notebook_config_by_id(notebook_id)?;
     let root = std::path::PathBuf::from(notebook.path).canonicalize().ok()?;
     let relative = std::path::Path::new(relative_path);
-    if relative.is_absolute() || !relative.is_md()
+    if relative.is_absolute()
+        || !(relative.is_md() || flowix_core::canvas::is_canvas_path(relative_path))
         || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
         return None;
     }
